@@ -28,3 +28,8 @@
 ## 本次环境验证
 
 本机检测到 JDK 17，但未检测到 Android SDK。Gradle Wrapper JAR 已与 Gradle 官方 8.13 SHA-256 对照校验。尝试运行 `gradlew --version` 时，Gradle 发行包下载连接超时，因此尚未完成实际编译或设备运行验证。
+
+
+
+## ❤️ 赞赏支持
+[![赞赏作者](https://pic1.afdiancdn.com/static/img/welcome/button-sponsorme.png)](https://afdian.com/a/abc88)
