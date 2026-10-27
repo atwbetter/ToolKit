@@ -30,7 +30,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.MoreApps
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.Search
@@ -244,7 +244,7 @@ private fun ToolTile(page: Page, modifier: Modifier = Modifier, onClick: () -> U
         Page.QR -> Icons.Outlined.QrCode2
         Page.CRYPTO -> Icons.Outlined.Lock
         Page.OTP -> Icons.Outlined.Security
-        else -> Icons.Outlined.MoreApps
+        else -> Icons.Outlined.Apps
     }
     val desc = when (page) {
         Page.QR -> "生成 · 扫描"
