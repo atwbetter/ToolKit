@@ -9,6 +9,16 @@ import com.google.zxing.common.BitMatrix
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
 object QrCodec {
+    fun decode(bitmap: Bitmap): String {
+        require(bitmap.width.toLong() * bitmap.height <= 8_000_000) { "图片过大" }
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        val source = com.google.zxing.RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
+        return com.google.zxing.qrcode.QRCodeReader().decode(
+            com.google.zxing.BinaryBitmap(com.google.zxing.common.HybridBinarizer(source)),
+            mapOf(com.google.zxing.DecodeHintType.TRY_HARDER to true, com.google.zxing.DecodeHintType.CHARACTER_SET to "UTF-8")).text
+    }
+
     fun generate(content: String, size: Int = 768): Bitmap {
         require(content.isNotBlank()) { "请输入二维码内容" }
         val hints = mapOf(

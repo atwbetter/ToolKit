@@ -1,7 +1,6 @@
 package com.example.androidtoolbox.ui
 
 import android.graphics.Bitmap
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -24,18 +23,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.QrCode2
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -46,20 +38,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -85,62 +71,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
-private val Indigo = Color(0xFF5D62EA)
-private val Blue = Color(0xFF3374EF)
-private val Ink = Color(0xFF263253)
-private val Muted = Color(0xFF8996AE)
-private val Canvas = Color(0xFFF8FAFF)
-private val Pale = Color(0xFFE9ECFF)
-private val Gradient = Brush.linearGradient(listOf(Indigo, Blue))
-
-private enum class Page { HOME, QR, CRYPTO, OTP, FAVORITES, HISTORY, PROFILE }
+internal val Indigo = Color(0xFF5D62EA)
+internal val Blue = Color(0xFF3374EF)
+internal val Ink = Color(0xFF263253)
+internal val Muted = Color(0xFF64718A)
+internal val Canvas = Color(0xFFF8FAFF)
+internal val Pale = Color(0xFFE9ECFF)
+internal val Gradient = Brush.linearGradient(listOf(Indigo, Blue))
 
 @Composable
-fun ToolboxApp(
-    accounts: List<OtpAccount>,
-    otpStoreError: String?,
-    qrScanned: String?,
-    onScanQr: () -> Unit,
-    onScanOtp: () -> Unit,
-    onAddOtp: (OtpAccount) -> Unit,
-    onDeleteOtp: (OtpAccount) -> Unit,
-    onSaveQr: (Bitmap) -> Unit,
-    onShareQr: (Bitmap) -> Unit,
-    onCopy: (String, String) -> Unit,
-) {
-    var pageName by rememberSaveable { mutableStateOf(Page.HOME.name) }
-    val page = Page.valueOf(pageName)
-    val favorites = remember { mutableStateListOf(Page.QR, Page.CRYPTO, Page.OTP) }
-    val history = remember { mutableStateListOf<Page>() }
-    fun open(target: Page) {
-        pageName = target.name
-        if (target in listOf(Page.QR, Page.CRYPTO, Page.OTP)) {
-            history.remove(target)
-            history.add(0, target)
-        }
-    }
-    BackHandler(page != Page.HOME) { pageName = Page.HOME.name }
-    MaterialTheme(colorScheme = lightColorScheme(primary = Indigo, background = Canvas, surface = Color.White)) {
-        Surface(Modifier.fillMaxSize(), color = Canvas) {
-            when (page) {
-                Page.HOME -> HomePage(history.firstOrNull(), ::open)
-                Page.QR -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy) { open(Page.HOME) }
-                Page.CRYPTO -> CryptoPage(onCopy) { open(Page.HOME) }
-                Page.OTP -> OtpPage(accounts, otpStoreError, onScanOtp, onAddOtp, onDeleteOtp, onCopy) { open(Page.HOME) }
-                Page.FAVORITES -> ListPage("收藏", favorites, ::open) { open(Page.HOME) }
-                Page.HISTORY -> ListPage("历史", history, ::open) { open(Page.HOME) }
-                Page.PROFILE -> ProfilePage { open(Page.HOME) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Header(title: String, subtitle: String, back: () -> Unit, trailing: (@Composable () -> Unit)? = null) {
+internal fun Header(title: String, subtitle: String, back: () -> Unit, trailing: (@Composable () -> Unit)? = null) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = back, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Outlined.ArrowBack, "返回", tint = Ink)
+            IconButton(onClick = back, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回", tint = Ink)
             }
             Spacer(Modifier.width(8.dp))
             Text(title, fontSize = 23.sp, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.weight(1f))
@@ -152,7 +96,7 @@ private fun Header(title: String, subtitle: String, back: () -> Unit, trailing: 
 }
 
 @Composable
-private fun SectionTitle(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
+internal fun SectionTitle(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = Ink, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
         if (action != null && onAction != null) TextButton(onClick = onAction) { Text(action, fontSize = 11.sp) }
@@ -160,7 +104,7 @@ private fun SectionTitle(title: String, action: String? = null, onAction: (() ->
 }
 
 @Composable
-private fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
+internal fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
     Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().height(48.dp),
         shape = RoundedCornerShape(13.dp), colors = ButtonDefaults.buttonColors(containerColor = Indigo)) {
         Text(text, fontWeight = FontWeight.Bold)
@@ -168,136 +112,13 @@ private fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = 
 }
 
 @Composable
-private fun HomePage(recent: Page?, open: (Page) -> Unit) {
-    var query by rememberSaveable { mutableStateOf("") }
-    Scaffold(containerColor = Canvas, bottomBar = {
-        NavigationBar(containerColor = Color.White) {
-            listOf(
-                Triple(Page.HOME, Icons.Outlined.Home, "首页"),
-                Triple(Page.FAVORITES, Icons.Outlined.StarBorder, "收藏"),
-                Triple(Page.HISTORY, Icons.Outlined.History, "历史"),
-                Triple(Page.PROFILE, Icons.Outlined.PersonOutline, "我的")
-            ).forEach { (page, icon, label) ->
-                NavigationBarItem(selected = page == Page.HOME, onClick = { open(page) },
-                    icon = { Icon(icon, label) }, label = { Text(label) })
-            }
-        }
-    }) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
-            item { Spacer(Modifier.height(18.dp)) }
-            item {
-                Text("早上好，开发者", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = Ink)
-                Text("今天要处理什么？", color = Muted, fontSize = 13.sp)
-            }
-            item {
-                OutlinedTextField(query, { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                    shape = RoundedCornerShape(14.dp), placeholder = { Text("搜索工具或功能") },
-                    leadingIcon = { Icon(Icons.Outlined.Search, null) })
-            }
-            if (query.isBlank()) {
-                item { SectionTitle(if (recent == null) "推荐工具" else "最近使用", "全部 ›") { open(Page.HISTORY) } }
-                item {
-                    val target = recent ?: Page.QR
-                    Box(Modifier.fillMaxWidth().height(92.dp).background(Gradient, RoundedCornerShape(18.dp))
-                        .clickable { open(target) }.padding(18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(when (target) {
-                                Page.CRYPTO -> Icons.Outlined.Lock
-                                Page.OTP -> Icons.Outlined.Security
-                                else -> Icons.Outlined.QrCode2
-                            }, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                            Spacer(Modifier.width(15.dp))
-                            Column {
-                                Text(titleOf(target), color = Color.White, fontWeight = FontWeight.Bold)
-                                Text("点击继续使用", color = Color.White.copy(alpha = .8f), fontSize = 11.sp)
-                            }
-                        }
-                    }
-                }
-            }
-            item { SectionTitle(if (query.isBlank()) "常用工具" else "搜索结果") }
-            val tools = listOf(Page.QR, Page.CRYPTO, Page.OTP).filter { query.isBlank() || titleOf(it).contains(query, true) }
-            if (tools.isEmpty()) item { Text("没有找到相关工具", color = Muted) }
-            else items(tools.chunked(2)) { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    row.forEach { item -> ToolTile(item, Modifier.weight(1f)) { open(item) } }
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
-                }
-            }
-            if (query.isBlank()) item { ToolTile(Page.PROFILE, Modifier.fillMaxWidth()) { open(Page.PROFILE) } }
-            item { Spacer(Modifier.height(12.dp)) }
-        }
-    }
-}
-
-private fun titleOf(page: Page) = when (page) {
-    Page.QR -> "二维码"
-    Page.CRYPTO -> "加解密"
-    Page.OTP -> "身份验证器"
-    Page.PROFILE -> "更多工具"
-    else -> page.name
-}
-
-@Composable
-private fun ToolTile(page: Page, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val icon = when (page) {
-        Page.QR -> Icons.Outlined.QrCode2
-        Page.CRYPTO -> Icons.Outlined.Lock
-        Page.OTP -> Icons.Outlined.Security
-        else -> Icons.Outlined.Apps
-    }
-    val desc = when (page) {
-        Page.QR -> "生成 · 扫描"
-        Page.CRYPTO -> "AES · RSA · 摘要"
-        Page.OTP -> "动态 2FA 验证码"
-        else -> "隐私与设置"
-    }
-    Card(onClick = onClick, modifier = modifier.height(120.dp), shape = RoundedCornerShape(17.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)) {
-        Column(Modifier.padding(15.dp)) {
-            Box(Modifier.size(38.dp).background(Pale, RoundedCornerShape(11.dp)), contentAlignment = Alignment.Center) {
-                Icon(icon, null, tint = Indigo, modifier = Modifier.size(23.dp))
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(titleOf(page), color = Ink, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text(desc, color = Muted, fontSize = 10.sp, maxLines = 1)
-        }
-    }
-}
-
-@Composable
-private fun ListPage(title: String, pages: List<Page>, open: (Page) -> Unit, back: () -> Unit) {
-    Column {
-        Header(title, "常用工具快捷入口", back)
-        Column(Modifier.padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (pages.isEmpty()) Text("暂无记录", color = Muted)
-            pages.forEach { ToolTile(it, Modifier.fillMaxWidth()) { open(it) } }
-        }
-    }
-}
-
-@Composable
-private fun ProfilePage(back: () -> Unit) {
-    Column {
-        Header("我的", "工具箱 · 0.1.0", back)
-        Card(Modifier.fillMaxWidth().padding(22.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("隐私说明", fontWeight = FontWeight.Bold, color = Ink)
-                Text("加解密和动态验证码在设备本地处理。2FA 密钥使用 Android Keystore 加密保存；不会上传服务器。扫码功能由 Google Play 服务提供。", color = Muted, fontSize = 13.sp)
-                HorizontalDivider()
-                Text("当前版本聚焦二维码、加解密和 2FA 三项工具。", color = Muted, fontSize = 13.sp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun QrPage(
+internal fun QrPage(
     scannedText: String?,
     onScan: () -> Unit,
     onSave: (Bitmap) -> Unit,
     onShare: (Bitmap) -> Unit,
     onCopy: (String, String) -> Unit,
+    onImage: () -> Unit,
     back: () -> Unit,
 ) {
     var mode by rememberSaveable { mutableStateOf(0) }
@@ -387,8 +208,9 @@ private fun QrPage(
                         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Icon(Icons.Outlined.QrCode2, null, tint = Indigo, modifier = Modifier.size(48.dp))
                             Text("扫描二维码", color = Ink, fontWeight = FontWeight.Bold)
-                            Text("调用设备扫码界面，识别二维码中的文本或链接。", color = Muted, fontSize = 13.sp)
-                            PrimaryButton("开始扫描", onScan)
+                            Text("图片解析完全离线；相机扫码需要 Google Play 服务，首次可能需联网。", color = Muted, fontSize = 13.sp)
+                            PrimaryButton("选择图片 · 离线解析", onImage)
+                            OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("相机扫码") }
                         }
                     }
                 }
@@ -412,7 +234,7 @@ private fun QrPage(
 }
 
 @Composable
-private fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
+internal fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
     var algorithmName by rememberSaveable { mutableStateOf(Algorithm.AES.name) }
     val algorithm = Algorithm.valueOf(algorithmName)
     var decrypt by rememberSaveable { mutableStateOf(false) }
@@ -517,19 +339,20 @@ private fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
 }
 
 @Composable
-private fun OtpPage(
+internal fun OtpPage(
     accounts: List<OtpAccount>,
     storeError: String?,
     onScan: () -> Unit,
     onAdd: (OtpAccount) -> Unit,
     onDelete: (OtpAccount) -> Unit,
     onCopy: (String, String) -> Unit,
+    onImage: () -> Unit,
+    onBackup: () -> Unit,
     back: () -> Unit,
 ) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showAdd by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<OtpAccount?>(null) }
-    var showBackupInfo by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()
@@ -594,8 +417,9 @@ private fun OtpPage(
             item {
                 Spacer(Modifier.height(4.dp))
                 PrimaryButton("＋ 添加账号", { showAdd = true }, enabled = storeError == null)
+                OutlinedButton(onClick = onImage, enabled = storeError == null, modifier = Modifier.fillMaxWidth()) { Text("从二维码图片添加 · 离线") }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                    TextButton(onClick = { showBackupInfo = true }) { Text("安全备份与迁移 ›", fontSize = 11.sp) }
+                    TextButton(onClick = onBackup) { Text("安全备份与迁移 ›", fontSize = 11.sp) }
                 }
             }
         }
@@ -608,9 +432,6 @@ private fun OtpPage(
         text = { Text("删除后，此设备将无法再为该账号生成验证码。请确认已设置其他登录方式。") },
         confirmButton = { TextButton(onClick = { deleting?.let(onDelete); deleting = null }) { Text("删除") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } })
-    if (showBackupInfo) AlertDialog(onDismissRequest = { showBackupInfo = false }, title = { Text("安全备份与迁移") },
-        text = { Text("当前版本尚未提供导出功能。添加账号时，请同时保存服务提供方给出的恢复码。") },
-        confirmButton = { TextButton(onClick = { showBackupInfo = false }) { Text("知道了") } })
 }
 
 @Composable

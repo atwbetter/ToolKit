@@ -13,9 +13,13 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Encrypted local storage. Android backup is disabled to avoid restoring data without its Keystore key. */
-class OtpStore(context: Context) {
-    private val prefs = context.getSharedPreferences("otp_v1", Context.MODE_PRIVATE)
-    private val alias = "toolbox_otp_key_v1"
+class OtpStore(
+    context: Context,
+    private val local: LocalStore,
+    preferencesName: String = "otp_v1",
+    private val alias: String = "toolbox_otp_key_v1",
+) {
+    private val prefs = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -32,7 +36,16 @@ class OtpStore(context: Context) {
     }
 
     fun load(): List<OtpAccount> {
-        val encoded = prefs.getString("accounts", null) ?: return emptyList()
+        local.vault()?.let { return decode(it) }
+        val legacy = prefs.getString("accounts", null) ?: return emptyList()
+        val accounts = decode(legacy)
+        // Commit the encrypted blob before removing the previous version's storage.
+        local.saveVault(legacy)
+        prefs.edit().remove("accounts").commit()
+        return accounts
+    }
+
+    private fun decode(encoded: String): List<OtpAccount> {
         val bytes = Base64.decode(encoded, Base64.NO_WRAP)
         require(bytes.size > 28) { "本地账号数据损坏" }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -50,6 +63,10 @@ class OtpStore(context: Context) {
     }
 
     fun save(accounts: List<OtpAccount>) {
+        local.saveVault(encode(accounts))
+    }
+
+    fun encode(accounts: List<OtpAccount>): String {
         val array = JSONArray()
         accounts.forEach { account ->
             array.put(JSONObject().apply {
@@ -64,7 +81,6 @@ class OtpStore(context: Context) {
         }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val encoded = Base64.encodeToString(cipher.iv + cipher.doFinal(array.toString().toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
-        check(prefs.edit().putString("accounts", encoded).commit()) { "保存账号失败" }
+        return Base64.encodeToString(cipher.iv + cipher.doFinal(array.toString().toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
     }
 }
