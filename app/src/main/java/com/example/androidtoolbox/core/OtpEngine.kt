@@ -25,6 +25,26 @@ object OtpEngine {
         return value
     }
 
+    fun secretBytes(secret: String): ByteArray = decodeBase32(normalizeSecret(secret))
+
+    fun encodeBase32(bytes: ByteArray): String {
+        var buffer = 0; var bits = 0
+        return buildString {
+            bytes.forEach { byte ->
+                buffer = (buffer shl 8) or (byte.toInt() and 255); bits += 8
+                while (bits >= 5) { bits -= 5; append(ALPHABET[(buffer ushr bits) and 31]) }
+            }
+            if (bits > 0) append(ALPHABET[(buffer shl (5 - bits)) and 31])
+        }
+    }
+
+    fun search(accounts: List<OtpAccount>, query: String): List<OtpAccount> {
+        val term = query.trim()
+        return if (term.isEmpty()) accounts else accounts.filter {
+            it.issuer.contains(term, ignoreCase = true) || it.name.contains(term, ignoreCase = true)
+        }
+    }
+
     private fun decodeBase32(secret: String): ByteArray {
         var buffer = 0
         var bits = 0

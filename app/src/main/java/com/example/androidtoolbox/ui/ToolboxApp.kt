@@ -33,6 +33,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -377,17 +379,25 @@ internal fun CryptoPage(
 internal fun OtpPage(
     accounts: List<OtpAccount>,
     storeError: String?,
+    busy: Boolean,
     onScan: () -> Unit,
     onAdd: (OtpAccount) -> Unit,
     onDelete: (OtpAccount) -> Unit,
     onCopy: (String, String) -> Unit,
     onImage: () -> Unit,
+    onImportText: (String) -> Unit,
+    onSaveQr: (Bitmap) -> Unit,
+    onShareQr: (Bitmap) -> Unit,
     onBackup: () -> Unit,
     back: () -> Unit,
 ) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showAdd by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<OtpAccount?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var showExport by remember { mutableStateOf(false) }
+    var showActions by remember { mutableStateOf(false) }
+    val filtered = remember(accounts, query) { OtpEngine.search(accounts, query) }
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()
@@ -395,7 +405,19 @@ internal fun OtpPage(
         }
     }
     Column {
-        Header("身份验证器", "动态验证码 · 离线可用", back)
+        Header("身份验证器", "动态验证码 · 离线可用", back, trailing = {
+            Box {
+                TextButton(onClick = { showActions = true }, enabled = !busy && storeError == null) { Text("管理") }
+                DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                    DropdownMenuItem(text = { Text("添加账号 / 扫码导入") },
+                        onClick = { showActions = false; showAdd = true })
+                    DropdownMenuItem(text = { Text("从二维码图片导入") },
+                        onClick = { showActions = false; onImage() })
+                    DropdownMenuItem(text = { Text("导出 Google 批量二维码") }, enabled = accounts.isNotEmpty(),
+                        onClick = { showActions = false; showExport = true })
+                }
+            }
+        })
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (storeError != null) item { Text(storeError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
             item {
@@ -410,18 +432,26 @@ internal fun OtpPage(
                     }
                 }
             }
-            item { SectionTitle("我的账号") }
+            item {
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true,
+                    label = { Text("搜索平台名称或账号") },
+                    trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("清除") } })
+                SectionTitle(if (query.isBlank()) "我的账号" else "搜索结果（${filtered.size} / ${accounts.size}）")
+            }
             if (accounts.isEmpty()) item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Outlined.Security, null, tint = Indigo, modifier = Modifier.size(40.dp))
                         Spacer(Modifier.height(12.dp))
                         Text("还没有 2FA 账号", color = Ink, fontWeight = FontWeight.Bold)
-                        Text("手动输入密钥，或扫描 otpauth 二维码", color = Muted, fontSize = 12.sp)
+                        Text("手动输入密钥，或导入普通 / Google 批量二维码", color = Muted, fontSize = 12.sp)
                     }
                 }
             }
-            items(accounts, key = { it.id }) { account ->
+            if (accounts.isNotEmpty() && filtered.isEmpty()) item {
+                Text("没有匹配的平台或账号，请尝试其他关键词", color = Muted, modifier = Modifier.padding(16.dp))
+            }
+            items(filtered, key = { it.id }) { account ->
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -433,7 +463,7 @@ internal fun OtpPage(
                                 Text(account.issuer.ifBlank { account.name }, color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 Text(account.name, color = Muted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
-                            IconButton(onClick = { deleting = account }) {
+                            IconButton(onClick = { deleting = account }, enabled = !busy && storeError == null) {
                                 Icon(Icons.Outlined.DeleteOutline, "删除账号", tint = Muted)
                             }
                         }
@@ -451,26 +481,30 @@ internal fun OtpPage(
             }
             item {
                 Spacer(Modifier.height(4.dp))
-                PrimaryButton("＋ 添加账号", { showAdd = true }, enabled = storeError == null)
-                OutlinedButton(onClick = onImage, enabled = storeError == null, modifier = Modifier.fillMaxWidth()) { Text("从二维码图片添加 · 离线") }
+                PrimaryButton("＋ 添加账号 / 扫码导入", { showAdd = true }, enabled = !busy && storeError == null)
+                OutlinedButton(onClick = onImage, enabled = !busy && storeError == null, modifier = Modifier.fillMaxWidth()) { Text("从二维码图片导入 · 可多选") }
+                OutlinedButton(onClick = { showExport = true }, enabled = !busy && storeError == null && accounts.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()) { Text("导出 Google 批量迁移二维码") }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     TextButton(onClick = onBackup) { Text("安全备份与迁移 ›", fontSize = 11.sp) }
                 }
             }
         }
     }
-    if (showAdd) AddOtpDialog(onDismiss = { showAdd = false }, onScan = { showAdd = false; onScan() }, onAdd = {
+    if (showExport) OtpMigrationExportDialog(accounts, { showExport = false }, onSaveQr, onShareQr)
+    if (showAdd) AddOtpDialog(onDismiss = { showAdd = false }, onScan = { showAdd = false; onScan() },
+        onImport = { showAdd = false; onImportText(it) }, onAdd = {
         onAdd(it)
         showAdd = false
     })
     if (deleting != null) AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除账号？") },
         text = { Text("删除后，此设备将无法再为该账号生成验证码。请确认已设置其他登录方式。") },
-        confirmButton = { TextButton(onClick = { deleting?.let(onDelete); deleting = null }) { Text("删除") } },
+        confirmButton = { TextButton(onClick = { deleting?.let(onDelete); deleting = null }, enabled = !busy) { Text("删除") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } })
 }
 
 @Composable
-private fun AddOtpDialog(onDismiss: () -> Unit, onScan: () -> Unit, onAdd: (OtpAccount) -> Unit) {
+private fun AddOtpDialog(onDismiss: () -> Unit, onScan: () -> Unit, onImport: (String) -> Unit, onAdd: (OtpAccount) -> Unit) {
     var issuer by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var secret by remember { mutableStateOf("") }
@@ -480,7 +514,7 @@ private fun AddOtpDialog(onDismiss: () -> Unit, onScan: () -> Unit, onAdd: (OtpA
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 OutlinedTextField(issuer, { issuer = it }, label = { Text("服务名称") }, singleLine = true)
                 OutlinedTextField(name, { name = it }, label = { Text("账号名称") }, singleLine = true)
-                OutlinedTextField(secret, { secret = it }, label = { Text("Base32 密钥或 otpauth 链接") }, minLines = 2, maxLines = 4)
+                OutlinedTextField(secret, { secret = it }, label = { Text("Base32 密钥或二维码链接（支持 Google 迁移）") }, minLines = 2, maxLines = 4)
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.QrCode2, null, modifier = Modifier.size(17.dp))
@@ -490,6 +524,10 @@ private fun AddOtpDialog(onDismiss: () -> Unit, onScan: () -> Unit, onAdd: (OtpA
             }
         },
         confirmButton = { TextButton(onClick = {
+            if (secret.trim().startsWith("otpauth-migration://")) {
+                onImport(secret)
+                return@TextButton
+            }
             runCatching {
                 if (secret.trim().startsWith("otpauth://")) OtpEngine.fromUri(secret)
                 else {

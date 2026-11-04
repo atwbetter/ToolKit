@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
     private var importData by mutableStateOf<BackupData?>(null)
     private var qrScanned by mutableStateOf<String?>(null)
     private var pendingQr: Bitmap? = null
-    private var imageForOtp = false
+    private var otpMigration by mutableStateOf<OtpMigrationBatch?>(null)
     companion object { private val ioMutex = Mutex() }
 
     private val createQr = registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
@@ -80,25 +80,25 @@ class MainActivity : ComponentActivity() {
     private val openQrImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) lifecycleScope.launch {
             busy = true
-            runCatching { withContext(Dispatchers.IO) {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法读取图片" }
-                val opts = BitmapFactory.Options()
-                while (bounds.outWidth.toLong() / opts.inSampleSize * (bounds.outHeight / opts.inSampleSize) > 4_000_000) opts.inSampleSize *= 2
-                val bitmap = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: error("无法读取图片")
-                try { QrCodec.decode(bitmap) } finally { bitmap.recycle() }
-            } }.onSuccess { value ->
-                if (imageForOtp) runCatching { OtpEngine.fromUri(value) }.onSuccess(::addAccount).onFailure { toast("未找到有效 2FA 二维码") }
-                else qrScanned = value
-            }.onFailure { toast("图片中未找到可识别的二维码") }
+            runCatching { withContext(Dispatchers.IO) { decodeQrImage(uri) } }
+                .onSuccess { qrScanned = it }.onFailure { toast("图片中未找到可识别的二维码") }
             busy = false
+        }
+    }
+    private val openOtpImages = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) lifecycleScope.launch {
+            busy = true
+            val result = runCatching { withContext(Dispatchers.IO) {
+                require(uris.size <= 100) { "每次最多选择 100 张图片，可分次继续添加" }
+                uris.map(::decodeQrImage)
+            } }
+            busy = false
+            result.onSuccess(::receiveOtpValues).onFailure { toast(it.message ?: "图片中未找到可识别的二维码") }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        imageForOtp = savedInstanceState?.getBoolean("imageForOtp") ?: false
         local = LocalStore.get(this)
         otpStore = OtpStore(this, local)
         runTask(initial = true) { }
@@ -119,18 +119,15 @@ class MainActivity : ComponentActivity() {
                     dismissImport = { importData = null },
                 ),
                 onScanQr = { scan(false) }, onScanOtp = { scan(true) },
-                onImageQr = { imageForOtp = false; openQrImage.launch(arrayOf("image/*")) },
-                onImageOtp = { imageForOtp = true; openQrImage.launch(arrayOf("image/*")) },
+                onImageQr = { openQrImage.launch(arrayOf("image/*")) },
+                onImageOtp = { openOtpImages.launch(arrayOf("image/*")) },
                 onAddOtp = ::addAccount, onDeleteOtp = ::deleteAccount,
-                onSaveQr = { pendingQr = it; createQr.launch("toolbox-qr.png") },
+                otpMigration = otpMigration, onImportOtpText = { receiveOtpValues(listOf(it)) },
+                onConfirmOtpMigration = ::confirmOtpMigration, onCancelOtpMigration = { otpMigration = null },
+                onSaveQr = { pendingQr = it; createQr.launch("toolbox-qr-${System.currentTimeMillis()}.png") },
                 onShareQr = ::shareQr, onCopy = ::copy,
             )
         }
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean("imageForOtp", imageForOtp)
-        super.onSaveInstanceState(outState)
     }
 
     private fun runTask(initial: Boolean = false, onSuccess: () -> Unit = {}, action: suspend () -> Unit) {
@@ -199,17 +196,64 @@ class MainActivity : ComponentActivity() {
         GmsBarcodeScanning.getClient(this, options).startScan()
             .addOnSuccessListener { barcode ->
                 val value = barcode.rawValue.orEmpty()
-                if (forOtp) runCatching { OtpEngine.fromUri(value) }.onSuccess(::addAccount).onFailure { toast(it.message ?: "2FA 二维码无效") }
+                if (forOtp) receiveOtpValues(listOf(value))
                 else qrScanned = value
             }.addOnFailureListener { toast("相机扫码需要 Google Play 服务，可改用离线图片解析") }
     }
 
-    private fun addAccount(account: OtpAccount) {
+    private fun addAccount(account: OtpAccount) = addAccounts(listOf(account))
+
+    private fun addAccounts(incoming: List<OtpAccount>) {
         runTask {
             check(otpStoreError == null) { otpStoreError.orEmpty() }
-            BackupCodec.parseAccounts(BackupCodec.accountsJson(listOf(account)))
-            otpStore.save(BackupCodec.mergeAccounts(otpStore.load(), listOf(account)))
+            BackupCodec.parseAccounts(BackupCodec.accountsJson(incoming))
+            val merged = BackupCodec.mergeAccounts(otpStore.load(), incoming)
+            require(merged.size <= 1000) { "最多保存 1000 个验证器账号" }
+            otpStore.save(merged)
         }
+    }
+
+    private fun receiveOtpValues(values: List<String>) {
+        runCatching {
+            check(otpStoreError == null && storageError == null) { "本地验证器暂不可用" }
+            if (values.isNotEmpty() && values.all { it.trim().startsWith("otpauth://") }) {
+                require(otpMigration == null) { "请先完成或取消当前迁移批次" }
+                addAccounts(values.map(OtpEngine::fromUri))
+            } else {
+                var staged = otpMigration ?: OtpMigrationBatch()
+                values.forEach { staged = staged.add(OtpMigration.decode(it)) }
+                // All selected images must be valid before changing the pending batch.
+                otpMigration = staged
+            }
+        }.onFailure { toast(it.message ?: "2FA 二维码无效") }
+    }
+
+    private fun confirmOtpMigration() {
+        val batch = otpMigration ?: return
+        if (!batch.complete) return
+        var added = 0
+        runTask(onSuccess = {
+            otpMigration = null
+            toast("已导入 $added 个账号，跳过 ${batch.accounts.size - added} 个重复账号")
+        }) {
+            check(otpStoreError == null) { otpStoreError.orEmpty() }
+            val incoming = BackupCodec.parseAccounts(BackupCodec.accountsJson(batch.accounts))
+            val existing = otpStore.load()
+            val merged = BackupCodec.mergeAccounts(existing, incoming)
+            require(merged.size <= 1000) { "导入后超过 1000 个账号，请先整理现有账号" }
+            added = merged.size - existing.size
+            otpStore.save(merged)
+        }
+    }
+
+    private fun decodeQrImage(uri: android.net.Uri): String {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法读取图片" }
+        val opts = BitmapFactory.Options()
+        while (bounds.outWidth.toLong() / opts.inSampleSize * (bounds.outHeight / opts.inSampleSize) > 4_000_000) opts.inSampleSize *= 2
+        val bitmap = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: error("无法读取图片")
+        return try { QrCodec.decode(bitmap) } finally { bitmap.recycle() }
     }
     private fun deleteAccount(account: OtpAccount) {
         runTask {
@@ -219,7 +263,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun shareQr(bitmap: Bitmap) {
         runCatching {
-            val file = File(File(cacheDir, "shared").apply { mkdirs() }, "toolbox-qr.png")
+            val file = File.createTempFile("toolbox-qr-", ".png", File(cacheDir, "shared").apply { mkdirs() })
             file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             shareFile(file, "image/png", "分享二维码")
         }.onFailure { toast(it.message ?: "分享失败") }

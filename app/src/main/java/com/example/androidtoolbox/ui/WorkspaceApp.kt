@@ -56,6 +56,8 @@ fun ToolboxApp(
     local: LocalSnapshot, busy: Boolean, storageError: String?, lastBackup: String?, importData: BackupData?, actions: LocalActions,
     onScanQr: () -> Unit, onScanOtp: () -> Unit, onImageQr: () -> Unit, onImageOtp: () -> Unit,
     onAddOtp: (OtpAccount) -> Unit, onDeleteOtp: (OtpAccount) -> Unit,
+    otpMigration: OtpMigrationBatch?, onImportOtpText: (String) -> Unit,
+    onConfirmOtpMigration: () -> Unit, onCancelOtpMigration: () -> Unit,
     onSaveQr: (Bitmap) -> Unit, onShareQr: (Bitmap) -> Unit, onCopy: (String, String) -> Unit,
 ) {
     var page by rememberSaveable { mutableStateOf("HOME") }
@@ -88,7 +90,8 @@ fun ToolboxApp(
                     "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, back)
                     "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, back)
                     "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, back)
-                    "OTP" -> OtpPage(accounts, otpStoreError, onScanOtp, onAddOtp, onDeleteOtp, onCopy, onImageOtp, { page = "PROFILE" }, back)
+                    "OTP" -> OtpPage(accounts, otpStoreError, busy || storageError != null, onScanOtp, onAddOtp,
+                        onDeleteOtp, onCopy, onImageOtp, onImportOtpText, onSaveQr, onShareQr, { page = "PROFILE" }, back)
                     "PROFILE" -> DataPage(local, accounts.size, busy, otpStoreError, lastBackup, actions, back)
                 }
             }
@@ -98,6 +101,8 @@ fun ToolboxApp(
                 Text("${importData.local.notes.size} 条便签、${importData.local.favorites.size} 个收藏、${importData.local.recent.size} 项最近使用、${importData.accounts.size} 个验证器账号。\n\n同 ID 便签保留修改时间较新的版本，时间相同保留本机；收藏与最近使用合并。现有记录不会批量删除。")
             }, confirmButton = { TextButton(onClick = actions.confirmImport, enabled = !busy) { Text("合并导入") } },
             dismissButton = { TextButton(onClick = actions.dismissImport, enabled = !busy) { Text("取消") } })
+        if (otpMigration != null) OtpMigrationImportDialog(otpMigration, busy, onScanOtp, onImageOtp,
+            onConfirmOtpMigration, onCancelOtpMigration)
     }
 }
 

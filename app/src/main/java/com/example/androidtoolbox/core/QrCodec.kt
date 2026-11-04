@@ -19,16 +19,20 @@ object QrCodec {
             mapOf(com.google.zxing.DecodeHintType.TRY_HARDER to true, com.google.zxing.DecodeHintType.CHARACTER_SET to "UTF-8")).text
     }
 
-    fun generate(content: String, size: Int = 768): Bitmap {
+    fun matrix(content: String, size: Int = 768): BitMatrix {
         require(content.isNotBlank()) { "请输入二维码内容" }
         val hints = mapOf(
             EncodeHintType.CHARACTER_SET to "UTF-8",
             EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
-            EncodeHintType.MARGIN to 2,
+            EncodeHintType.MARGIN to 4,
         )
-        val matrix: BitMatrix = MultiFormatWriter().encode(
+        return MultiFormatWriter().encode(
             content, BarcodeFormat.QR_CODE, size, size, hints
         )
+    }
+
+    fun generate(content: String, size: Int = 768): Bitmap {
+        val matrix = matrix(content, size)
         val pixels = IntArray(size * size)
         for (y in 0 until size) for (x in 0 until size) {
             pixels[y * size + x] = if (matrix[x, y]) Color.rgb(39, 50, 82) else Color.WHITE
