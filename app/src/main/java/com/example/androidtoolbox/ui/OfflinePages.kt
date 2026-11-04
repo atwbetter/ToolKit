@@ -218,7 +218,7 @@ internal fun DataPage(local: LocalSnapshot, accountCount: Int, busy: Boolean, ot
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     Text("关于本地数据", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("SQLite 保存在应用私有目录，验证器密钥额外使用 Android Keystore 加密。便签为普通本地数据，不适合保存密码。卸载应用或清除应用数据会删除本地记录，请先将备份导出到应用外。", color = Muted, fontSize = 11.sp)
-                    Text("文件分享由系统应用处理；工具箱不会自动发送邮件或后台同步。相机扫码需 Google Play 服务，图片二维码解析无需联网。", color = Muted, fontSize = 11.sp)
+                    Text("文件分享由系统应用处理；工具箱不会自动发送邮件或后台同步。相机扫码与图片解析均在本机完成，无需 Google Play 服务或联网。", color = Muted, fontSize = 11.sp)
                 }
             } }
             item { Spacer(Modifier.height(20.dp)) }

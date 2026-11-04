@@ -19,9 +19,6 @@ import androidx.lifecycle.lifecycleScope
 import com.example.androidtoolbox.core.*
 import com.example.androidtoolbox.ui.LocalActions
 import com.example.androidtoolbox.ui.ToolboxApp
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -44,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private var qrScanned by mutableStateOf<String?>(null)
     private var pendingQr: Bitmap? = null
     private var otpMigration by mutableStateOf<OtpMigrationBatch?>(null)
+    private var otpManualRequested by mutableStateOf(false)
     companion object { private val ioMutex = Mutex() }
 
     private val createQr = registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
@@ -96,6 +94,25 @@ class MainActivity : ComponentActivity() {
             result.onSuccess(::receiveOtpValues).onFailure { toast(it.message ?: "图片中未找到可识别的二维码") }
         }
     }
+    private val scanQr = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val data = result.data
+            if (data?.getStringExtra(QrScannerActivity.EXTRA_ACTION) == QrScannerActivity.ACTION_IMAGE)
+                openQrImage.launch(arrayOf("image/*"))
+            else data?.getStringExtra(QrScannerActivity.EXTRA_VALUE)?.let { qrScanned = it }
+        }
+    }
+    private val scanOtp = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val data = result.data
+            when (data?.getStringExtra(QrScannerActivity.EXTRA_ACTION)) {
+                QrScannerActivity.ACTION_IMAGE -> openOtpImages.launch(arrayOf("image/*"))
+                QrScannerActivity.ACTION_MANUAL -> if (otpMigration == null) otpManualRequested = true
+                    else toast("请先完成或取消当前迁移批次，再手动添加账号")
+                else -> data?.getStringExtra(QrScannerActivity.EXTRA_VALUE)?.let { receiveOtpValues(listOf(it)) }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,6 +139,7 @@ class MainActivity : ComponentActivity() {
                 onImageQr = { openQrImage.launch(arrayOf("image/*")) },
                 onImageOtp = { openOtpImages.launch(arrayOf("image/*")) },
                 onAddOtp = ::addAccount, onDeleteOtp = ::deleteAccount,
+                otpManualRequested = otpManualRequested, onOtpManualShown = { otpManualRequested = false },
                 otpMigration = otpMigration, onImportOtpText = { receiveOtpValues(listOf(it)) },
                 onConfirmOtpMigration = ::confirmOtpMigration, onCancelOtpMigration = { otpMigration = null },
                 onSaveQr = { pendingQr = it; createQr.launch("toolbox-qr-${System.currentTimeMillis()}.png") },
@@ -192,13 +210,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun scan(forOtp: Boolean) {
-        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
-        GmsBarcodeScanning.getClient(this, options).startScan()
-            .addOnSuccessListener { barcode ->
-                val value = barcode.rawValue.orEmpty()
-                if (forOtp) receiveOtpValues(listOf(value))
-                else qrScanned = value
-            }.addOnFailureListener { toast("相机扫码需要 Google Play 服务，可改用离线图片解析") }
+        val intent = Intent(this, QrScannerActivity::class.java).putExtra(QrScannerActivity.EXTRA_OTP, forOtp)
+        if (forOtp) scanOtp.launch(intent) else scanQr.launch(intent)
     }
 
     private fun addAccount(account: OtpAccount) = addAccounts(listOf(account))

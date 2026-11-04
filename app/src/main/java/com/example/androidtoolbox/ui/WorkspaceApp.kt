@@ -56,6 +56,7 @@ fun ToolboxApp(
     local: LocalSnapshot, busy: Boolean, storageError: String?, lastBackup: String?, importData: BackupData?, actions: LocalActions,
     onScanQr: () -> Unit, onScanOtp: () -> Unit, onImageQr: () -> Unit, onImageOtp: () -> Unit,
     onAddOtp: (OtpAccount) -> Unit, onDeleteOtp: (OtpAccount) -> Unit,
+    otpManualRequested: Boolean, onOtpManualShown: () -> Unit,
     otpMigration: OtpMigrationBatch?, onImportOtpText: (String) -> Unit,
     onConfirmOtpMigration: () -> Unit, onCancelOtpMigration: () -> Unit,
     onSaveQr: (Bitmap) -> Unit, onShareQr: (Bitmap) -> Unit, onCopy: (String, String) -> Unit,
@@ -91,7 +92,8 @@ fun ToolboxApp(
                     "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, back)
                     "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, back)
                     "OTP" -> OtpPage(accounts, otpStoreError, busy || storageError != null, onScanOtp, onAddOtp,
-                        onDeleteOtp, onCopy, onImageOtp, onImportOtpText, onSaveQr, onShareQr, { page = "PROFILE" }, back)
+                        onDeleteOtp, onCopy, onImageOtp, onImportOtpText, onSaveQr, onShareQr,
+                        otpManualRequested, onOtpManualShown, { page = "PROFILE" }, back)
                     "PROFILE" -> DataPage(local, accounts.size, busy, otpStoreError, lastBackup, actions, back)
                 }
             }

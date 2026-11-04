@@ -211,7 +211,7 @@ internal fun QrPage(
                         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Icon(Icons.Outlined.QrCode2, null, tint = Indigo, modifier = Modifier.size(48.dp))
                             Text("扫描二维码", color = Ink, fontWeight = FontWeight.Bold)
-                            Text("图片解析完全离线；相机扫码需要 Google Play 服务，首次可能需联网。", color = Muted, fontSize = 13.sp)
+                            Text("相机扫码与图片解析均在本机完成，无需联网或 Google Play 服务。", color = Muted, fontSize = 13.sp)
                             PrimaryButton("选择图片 · 离线解析", onImage)
                             OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("相机扫码") }
                         }
@@ -388,6 +388,8 @@ internal fun OtpPage(
     onImportText: (String) -> Unit,
     onSaveQr: (Bitmap) -> Unit,
     onShareQr: (Bitmap) -> Unit,
+    manualRequested: Boolean,
+    onManualShown: () -> Unit,
     onBackup: () -> Unit,
     back: () -> Unit,
 ) {
@@ -398,6 +400,9 @@ internal fun OtpPage(
     var showExport by remember { mutableStateOf(false) }
     var showActions by remember { mutableStateOf(false) }
     val filtered = remember(accounts, query) { OtpEngine.search(accounts, query) }
+    LaunchedEffect(manualRequested) {
+        if (manualRequested) { showAdd = true; onManualShown() }
+    }
     LaunchedEffect(Unit) {
         while (true) {
             now = System.currentTimeMillis()

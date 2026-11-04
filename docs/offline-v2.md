@@ -24,7 +24,7 @@
 | 2FA | 手动、相机扫码、离线图片添加，动态验证码，删除 | Keystore AES-GCM 密文写入 SQLite |
 | 数据备份 | 普通 JSON、口令加密备份、系统分享、导入预览和合并 | 用户通过系统文件选择器保存 / 读取 |
 
-相机扫码沿用 Google Code Scanner：设备需要 Google Play 服务，首次下载扫码模块可能联网。图片解析不依赖该模块。新增工具不调用网络，不要求登录，不申请广泛存储访问权限；合并后的应用清单仍包含原扫码依赖引入的 INTERNET / ACCESS_NETWORK_STATE 权限，因此本版本不宣称完全隔绝网络。
+2026-11-04 更新：相机扫码改为应用内 CameraX + ZXing，普通二维码工具和 2FA 添加共用同一扫码页，不再依赖 Google Play 服务或联网下载识别模块。首次进入扫码时申请相机权限，拒绝后可继续用图片导入和手动输入。识别与图片解析均在本机完成；移除 Google Code Scanner 后，合并清单已无 INTERNET 权限，CameraX 的间接依赖仍声明 ACCESS_NETWORK_STATE。详见 [本地相机扫码](camera-scanner.md)。
 
 输入限制：JSON / 文本每次最多 256000 个 UTF-16 字符；JSON 最多嵌套 64 层；便签标题最多 200 个 UTF-16 字符、正文最多 100000 个。密码长度按字符数计。
 
