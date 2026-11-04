@@ -10,6 +10,31 @@ import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class LocalStoreTest {
+    @Test fun encryptedNotesRemainDecryptableAfterReopen() {
+        val base = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "test-${UUID.randomUUID()}.db"
+        var store = LocalStore(base, name)
+        val text = "便签中的加密内容 🔐"
+        val keys = mapOf(Algorithm.AES to "note passphrase", Algorithm.AES128 to "0123456789abcdef",
+            Algorithm.AES256 to "0123456789abcdef0123456789abcdef")
+        try {
+            keys.forEach { (algorithm, key) ->
+                val encrypted = CryptoEngine.process(algorithm, false, text, key)
+                store.saveNote(LocalNote(UUID.randomUUID().toString(), "${algorithm.label} 加密结果", encrypted))
+            }
+            store.close()
+            store = LocalStore(base, name)
+            val notes = store.snapshot().notes
+            assertEquals(3, notes.size)
+            keys.forEach { (algorithm, key) ->
+                val note = notes.single { it.title == "${algorithm.label} 加密结果" }
+                assertFalse(note.body.contains(text))
+                assertFalse(note.body.contains(key))
+                assertEquals(text, CryptoEngine.process(algorithm, true, note.body, key))
+            }
+        } finally { store.close(); base.deleteDatabase(name) }
+    }
+
     @Test fun persistsAcrossReopenAndMergesIdempotently() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
         val name = "test-${UUID.randomUUID()}.db"

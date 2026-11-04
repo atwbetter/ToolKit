@@ -9,16 +9,19 @@ import java.util.Base64
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
+import javax.crypto.BadPaddingException
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 import java.security.spec.MGF1ParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-enum class Algorithm(val label: String) {
-    AES("AES-256-GCM"), RSA("RSA-OAEP"), BASE64("Base64"), SHA256("SHA-256"), SHA512("SHA-512")
+enum class Algorithm(val label: String, val rawKeyBytes: Int? = null) {
+    AES("AES-256-GCM"), AES128("AES-128", 16), AES256("AES-256", 32),
+    RSA("RSA-OAEP"), BASE64("Base64"), SHA256("SHA-256"), SHA512("SHA-512")
 }
 
 object CryptoEngine {
@@ -32,6 +35,7 @@ object CryptoEngine {
         require(input.isNotEmpty()) { "请输入内容" }
         return when (algorithm) {
             Algorithm.AES -> if (decrypt) decryptAes(input, key) else encryptAes(input, key)
+            Algorithm.AES128, Algorithm.AES256 -> processAesCbc(algorithm, decrypt, input, key)
             Algorithm.RSA -> if (decrypt) decryptRsa(input, key) else encryptRsa(input, key)
             Algorithm.BASE64 -> if (decrypt) String(unb64(input), utf8) else b64(input.toByteArray(utf8))
             Algorithm.SHA256 -> digest(input, "SHA-256")
@@ -69,6 +73,36 @@ object CryptoEngine {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, derive(password, salt), GCMParameterSpec(128, iv))
         return String(cipher.doFinal(bytes.copyOfRange(28, bytes.size)), utf8)
+    }
+
+    private fun processAesCbc(algorithm: Algorithm, decrypt: Boolean, input: String, key: String): String {
+        val keySize = requireNotNull(algorithm.rawKeyBytes)
+        // Use the exact UTF-8 bytes: no trimming, hashing, padding or password derivation.
+        val keyBytes = key.toByteArray(utf8)
+        require(keyBytes.size == keySize) { "${algorithm.label} 密钥必须为 $keySize 字节（UTF-8），当前为 ${keyBytes.size} 字节" }
+        val secret = SecretKeySpec(keyBytes, "AES")
+        val prefix = "aes-${keySize * 8}-cbc:v1:"
+        // JCA calls PKCS#7 padding for the AES block size PKCS5Padding.
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        if (!decrypt) {
+            val iv = ByteArray(16).also(random::nextBytes)
+            cipher.init(Cipher.ENCRYPT_MODE, secret, IvParameterSpec(iv))
+            return prefix + b64(iv + cipher.doFinal(input.toByteArray(utf8)))
+        }
+        val content = input.trim()
+        require(content.startsWith(prefix)) { "请选择对应的 ${algorithm.label} 算法，并输入完整密文（含 $prefix 前缀）" }
+        val bytes = try {
+            Base64.getDecoder().decode(content.substring(prefix.length))
+        } catch (e: IllegalArgumentException) {
+            throw IllegalArgumentException("密文 Base64 格式不正确", e)
+        }
+        require(bytes.size >= 32 && (bytes.size - 16) % 16 == 0) { "密文长度不正确" }
+        cipher.init(Cipher.DECRYPT_MODE, secret, IvParameterSpec(bytes.copyOfRange(0, 16)))
+        return try {
+            String(cipher.doFinal(bytes.copyOfRange(16, bytes.size)), utf8)
+        } catch (e: BadPaddingException) {
+            throw IllegalArgumentException("解密失败，请检查密钥和密文", e)
+        }
     }
 
     private val oaep = OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT)

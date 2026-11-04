@@ -87,7 +87,7 @@ fun ToolboxApp(
                     "NOTES" -> NotesPage(local.notes, busy, actions, back)
                     "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, back)
                     "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, back)
-                    "CRYPTO" -> CryptoPage(onCopy, back)
+                    "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, back)
                     "OTP" -> OtpPage(accounts, otpStoreError, onScanOtp, onAddOtp, onDeleteOtp, onCopy, onImageOtp, { page = "PROFILE" }, back)
                     "PROFILE" -> DataPage(local, accounts.size, busy, otpStoreError, lastBackup, actions, back)
                 }

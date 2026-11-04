@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.androidtoolbox.core.Algorithm
 import com.example.androidtoolbox.core.CryptoEngine
+import com.example.androidtoolbox.core.LocalNote
 import com.example.androidtoolbox.core.OtpAccount
 import com.example.androidtoolbox.core.OtpEngine
 import com.example.androidtoolbox.core.QrCodec
@@ -234,20 +235,31 @@ internal fun QrPage(
 }
 
 @Composable
-internal fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
+internal fun CryptoPage(
+    onCopy: (String, String) -> Unit,
+    onSaveNote: (LocalNote, () -> Unit) -> Unit,
+    canSaveNote: Boolean,
+    back: () -> Unit,
+) {
     var algorithmName by rememberSaveable { mutableStateOf(Algorithm.AES.name) }
     val algorithm = Algorithm.valueOf(algorithmName)
     var decrypt by rememberSaveable { mutableStateOf(false) }
     var input by rememberSaveable { mutableStateOf("") }
     var key by rememberSaveable { mutableStateOf("") }
     var result by rememberSaveable { mutableStateOf("") }
+    var resultNoteId by rememberSaveable { mutableStateOf(UUID.randomUUID().toString()) }
+    var savedToNote by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var rsaPair by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showKeys by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val isHash = algorithm == Algorithm.SHA256 || algorithm == Algorithm.SHA512
-    val needsKey = algorithm == Algorithm.AES || algorithm == Algorithm.RSA
+    val keySize = algorithm.rawKeyBytes
+    val needsKey = algorithm == Algorithm.AES || algorithm == Algorithm.RSA || keySize != null
+    val keyByteCount = key.toByteArray(Charsets.UTF_8).size
+    val invalidKeyLength = keySize != null && keyByteCount != keySize
+    fun clearResult() { result = ""; savedToNote = false; error = null }
     Column {
         Header("加解密", "敏感内容默认仅在设备上处理", back, trailing = {
             Text("● 本地处理", color = Color(0xFF229A72), fontSize = 10.sp,
@@ -260,54 +272,64 @@ internal fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
                     Algorithm.entries.forEach { option ->
                         FilterChip(selected = algorithm == option, onClick = {
                             algorithmName = option.name
-                            result = ""
-                            error = null
+                            clearResult()
                             if (option == Algorithm.SHA256 || option == Algorithm.SHA512) decrypt = false
-                        }, label = { Text(option.label) })
+                        }, enabled = !busy, label = { Text(option.label) })
                     }
                 }
             }
             if (!isHash) item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !decrypt, onClick = { decrypt = false; result = "" }, label = { Text(if (algorithm == Algorithm.BASE64) "编码" else "加密") })
-                    FilterChip(selected = decrypt, onClick = { decrypt = true; result = "" }, label = { Text(if (algorithm == Algorithm.BASE64) "解码" else "解密") })
+                    FilterChip(selected = !decrypt, onClick = { decrypt = false; clearResult() }, enabled = !busy, label = { Text(if (algorithm == Algorithm.BASE64) "编码" else "加密") })
+                    FilterChip(selected = decrypt, onClick = { decrypt = true; clearResult() }, enabled = !busy, label = { Text(if (algorithm == Algorithm.BASE64) "解码" else "解密") })
                 }
             }
             item {
                 Text(if (decrypt) "密文 / 编码内容" else "原文", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                OutlinedTextField(input, { input = it }, modifier = Modifier.fillMaxWidth(),
+                OutlinedTextField(input, { input = it; clearResult() }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
                     minLines = 4, maxLines = 8, shape = RoundedCornerShape(14.dp),
                     placeholder = { Text("输入待处理内容…") })
             }
             if (needsKey) item {
-                Text(if (algorithm == Algorithm.RSA) {
-                    if (decrypt) "PKCS#8 私钥（PEM）" else "X.509 公钥（PEM）"
-                } else "口令 / 密钥", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                OutlinedTextField(key, { key = it }, modifier = Modifier.fillMaxWidth(),
+                Text(when {
+                    algorithm == Algorithm.RSA -> if (decrypt) "PKCS#8 私钥（PEM）" else "X.509 公钥（PEM）"
+                    keySize != null -> "自定义密钥（$keySize 字节）"
+                    else -> "口令 / 密钥"
+                }, color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                OutlinedTextField(key, { key = it; clearResult() }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
                     minLines = if (algorithm == Algorithm.RSA) 3 else 1,
                     maxLines = if (algorithm == Algorithm.RSA) 6 else 2,
-                    shape = RoundedCornerShape(14.dp), placeholder = { Text("输入${if (algorithm == Algorithm.RSA) "PEM 密钥" else "口令"}") })
+                    isError = key.isNotEmpty() && invalidKeyLength,
+                    supportingText = if (keySize != null) ({ Text("UTF-8：$keyByteCount / $keySize 字节；1 个英文字母占 1 字节，常用汉字占 3 字节") }) else null,
+                    shape = RoundedCornerShape(14.dp), placeholder = { Text(when {
+                        algorithm == Algorithm.RSA -> "输入 PEM 密钥"
+                        keySize != null -> "输入 $keySize 字节密钥"
+                        else -> "输入口令"
+                    }) })
                 if (algorithm == Algorithm.RSA) TextButton(onClick = {
                     if (rsaPair != null) showKeys = true else scope.launch {
                         busy = true
                         runCatching { withContext(Dispatchers.Default) { CryptoEngine.generateRsaPair() } }
-                            .onSuccess { rsaPair = it; key = if (decrypt) it.second else it.first; showKeys = true }
+                            .onSuccess { rsaPair = it; key = if (decrypt) it.second else it.first; clearResult(); showKeys = true }
                             .onFailure { error = it.message }
                         busy = false
                     }
-                }) { Text(if (rsaPair == null) "生成 2048 位密钥对" else "查看本次生成的密钥对") }
+                }, enabled = !busy) { Text(if (rsaPair == null) "生成 2048 位密钥对" else "查看本次生成的密钥对") }
             }
             if (algorithm == Algorithm.AES) item {
                 Text("随机生成盐和 IV；解密需要相同口令和完整密文。", color = Muted, fontSize = 11.sp)
             }
+            if (keySize != null) item {
+                Text("CBC 模式 · PKCS7 填充；直接使用密钥的 UTF-8 字节，不补齐或派生。每次随机生成 IV 并随密文保存，解密请保留完整前缀。", color = Muted, fontSize = 11.sp)
+            }
             item {
                 PrimaryButton(if (isHash) "计算摘要" else if (decrypt) "开始${if (algorithm == Algorithm.BASE64) "解码" else "解密"}"
-                    else "开始${if (algorithm == Algorithm.BASE64) "编码" else "加密"}", enabled = !busy, onClick = {
+                    else "开始${if (algorithm == Algorithm.BASE64) "编码" else "加密"}", enabled = !busy && !invalidKeyLength, onClick = {
                     scope.launch {
                         busy = true
-                        error = null
+                        clearResult()
                         runCatching { withContext(Dispatchers.Default) { CryptoEngine.process(algorithm, decrypt, input, key) } }
-                            .onSuccess { result = it }
+                            .onSuccess { result = it; resultNoteId = UUID.randomUUID().toString() }
                             .onFailure { error = it.message ?: "处理失败，请检查输入与密钥" }
                         busy = false
                     }
@@ -319,7 +341,20 @@ internal fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
                     Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("输出结果", color = Color(0xFF5368AC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         SelectionContainer { Text(result.ifBlank { "处理后的内容将显示在这里" }, color = if (result.isBlank()) Muted else Ink, fontSize = 12.sp) }
-                        if (result.isNotBlank()) TextButton(onClick = { onCopy("处理结果", result) }) { Text("复制结果") }
+                        if (result.isNotBlank()) {
+                            TextButton(onClick = { onCopy("处理结果", result) }) { Text("复制结果") }
+                            if (!decrypt && needsKey) {
+                                OutlinedButton(onClick = {
+                                    val encrypted = result
+                                    onSaveNote(LocalNote(resultNoteId, "${algorithm.label} 加密结果", encrypted)) {
+                                        if (result == encrypted) savedToNote = true
+                                    }
+                                }, enabled = canSaveNote && !busy && !savedToNote, modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (savedToNote) "已保存到便签" else "保存到便签")
+                                }
+                                Text("${if (savedToNote) "可在「离线便签」中查看。" else "保存完整密文；"}密钥与原文不会写入便签。", color = Muted, fontSize = 11.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -334,7 +369,7 @@ internal fun CryptoPage(onCopy: (String, String) -> Unit, back: () -> Unit) {
                 SelectionContainer { Text("公钥\n${rsaPair!!.first}\n\n私钥\n${rsaPair!!.second}", fontSize = 10.sp) }
             }
         }, confirmButton = {
-            TextButton(onClick = { key = if (decrypt) rsaPair!!.second else rsaPair!!.first; showKeys = false }) { Text("使用密钥") }
+            TextButton(onClick = { key = if (decrypt) rsaPair!!.second else rsaPair!!.first; clearResult(); showKeys = false }) { Text("使用密钥") }
         }, dismissButton = { TextButton(onClick = { showKeys = false }) { Text("关闭") } })
 }
 

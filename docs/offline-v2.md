@@ -20,6 +20,7 @@
 | 密码生成 | 8–128 位、四类字符组合、保证包含所选类别 | SecureRandom；不自动保存；剪贴板标注敏感 |
 | 时间戳 | 秒 / 毫秒与日期互转、设备时区 / UTC、填入当前时间 | 内存；严格日期校验，拒绝有歧义的夏令时本地时间 |
 | 二维码 | 生成、保存、分享；新增图片离线解析 | 生成与图片解析使用内置 ZXing |
+| 加解密 | AES-256-GCM、AES-128 / AES-256、RSA、Base64、SHA 摘要；加密结果可保存到便签 | 默认内存；仅点击「保存到便签」才写入完整密文 |
 | 2FA | 手动、相机扫码、离线图片添加，动态验证码，删除 | Keystore AES-GCM 密文写入 SQLite |
 | 数据备份 | 普通 JSON、口令加密备份、系统分享、导入预览和合并 | 用户通过系统文件选择器保存 / 读取 |
 
@@ -52,6 +53,20 @@
 本期使用系统自带 SQLite API，控制运行依赖和改动范围。[Android 官方推荐 Room 作为 SQLite 的抽象层](https://developer.android.com/training/data-storage/sqlite)；数据关系复杂后可改用 Room，同时保留表结构与显式 migration。更换数据库访问层不改变用户的备份格式。
 
 普通便签没有额外字段加密，不应当作密码保险箱；2FA 密钥仍使用 Android Keystore AES-256-GCM 额外加密。旧版 `otp_v1` SharedPreferences 的密文在成功解密并写入 SQLite 后才移除；读取失败会阻止验证器修改，保留原数据。
+
+## 加解密与密文便签（2026-11-04）
+
+| 选项 | 密钥输入 | 密文格式 |
+| --- | --- | --- |
+| AES-256-GCM（原有） | 自定义口令，经 PBKDF2-HMAC-SHA256 派生 256 位密钥 | 原 `v1:` + Base64（16 字节盐 + 12 字节 IV + 密文及 16 字节认证标签），保持不变 |
+| AES-128（新增） | 直接使用输入文本的 16 字节 UTF-8 编码 | `aes-128-cbc:v1:` + Base64（16 字节随机 IV + CBC 密文） |
+| AES-256（新增） | 直接使用输入文本的 32 字节 UTF-8 编码 | `aes-256-cbc:v1:` + Base64（16 字节随机 IV + CBC 密文） |
+
+新增两项采用 CBC / PKCS7 填充，每次加密独立生成 IV，不派生、散列、补齐或截断密钥，也不移除密钥首尾空格。界面实时显示 UTF-8 字节数，长度不符时禁止提交；英文 ASCII 字符各占 1 字节，常用汉字各占 3 字节。例如 AES-128 可使用 `0123456789abcdef`。CBC 密文不包含认证标签；需要认证加密时使用原有 AES-256-GCM。Java / Android 的实现名称为 `AES/CBC/PKCS5Padding`（AES 的块大小下使用 PKCS7 规则），参见 [JCA 官方参考](https://docs.oracle.com/en/java/javase/17/security/java-cryptography-architecture-jca-reference-guide.html)。
+
+解密须选择对应算法、输入同一密钥和带前缀的完整密文；随机 IV 已包含在输出中，无需手动输入。现有备份与验证器加密流程未改用新增算法。
+
+AES 或 RSA 加密成功后，输出区显示「保存到便签」。便签标题为「算法名 加密结果」，正文精确保留完整输出，不附加原文、密钥或口令。保存通过原有 SQLite IO 队列执行，仅成功回调后显示「已保存到便签」并禁用本次保存按钮；失败保留输出，可重试。解密、Base64 和摘要结果不显示此按钮。便签正文仍受 100000 个 UTF-16 字符的原有限制，超限保存会提示错误，不截断密文。
 
 ## 为什么采用文件迁移
 
@@ -118,6 +133,8 @@ MainActivity.kt        文件选择器、IO 队列、剪贴板、分享和扫码
 ## 验证与待实机验收
 
 执行 `./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug`。本机用 JDK 17，Java / Kotlin 均统一为 JVM 17。
+
+2026-11-04 增量验证：22 项 JVM 测试全部通过，包含独立 .NET 生成的 AES-128 / AES-256 CBC 测试向量、随机 IV、多字节与带空格密钥、边界长度、错误密钥和损坏密文，以及原 AES-256-GCM `v1:` 测试向量。Debug APK 与设备测试 APK 编译通过。设备测试新增三种 AES 密文便签保存后重开数据库再解密；本次未连接设备，尚未执行设备测试。以下为上一轮 2026-11-03 的完整验证记录。
 
 - 13 项 JVM 测试通过：包含原算法测试，以及 JSON 精度和无效语法、温度 / 存储换算、字符类别、严格日期、备份往返、错误口令、密文篡改、不兼容版本和 OTP 合并冲突。
 - Debug APK 与 Android 设备测试 APK 编译通过。
