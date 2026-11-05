@@ -87,7 +87,7 @@ fun ToolboxApp(
                 val back = { page = "HOME" }
                 when (page) {
                     "HOME", "ALL", "FAVORITES", "HISTORY" -> Directory(page, local, busy, actions, ::open)
-                    "NOTES" -> NotesPage(local.notes, busy, actions, back)
+                    "NOTES" -> NotesPage(local.notes, busy, actions, onCopy, back)
                     "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, back)
                     "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, back)
                     "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, back)

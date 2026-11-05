@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,7 +31,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 @Composable
-internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActions, back: () -> Unit) {
+internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActions, onCopy: (String, String) -> Unit, back: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var pinnedOnly by rememberSaveable { mutableStateOf(false) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -62,7 +63,10 @@ internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActi
                         Text(note.title.ifBlank { "未命名便签" }, fontWeight = FontWeight.Bold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(8.dp)); Text(note.body, color = Muted, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(12.dp))
-                        Text((if (note.pinned) "置顶 · " else "") + DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(note.updatedAt)), color = Muted, fontSize = 10.sp)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text((if (note.pinned) "置顶 · " else "") + DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(note.updatedAt)), modifier = Modifier.weight(1f), color = Muted, fontSize = 10.sp)
+                            NoteCopyButton(note.body, onCopy)
+                        }
                     }
                 }
             }
@@ -73,6 +77,7 @@ internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActi
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(title, { if (it.length <= 200) title = it }, Modifier.fillMaxWidth(), label = { Text("标题（最多 200 字）") }, singleLine = true)
             OutlinedTextField(body, { if (it.length <= 100_000) body = it }, Modifier.fillMaxWidth().heightIn(max = 280.dp), label = { Text("正文") }, minLines = 5, maxLines = 10)
+            NoteCopyButton(body, onCopy)
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(pinned, { pinned = it }); Text("置顶便签") }
             if (notes.any { it.id == editingId }) TextButton(onClick = { deleting = notes.find { it.id == editingId } }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, null); Text("删除便签") }
         } },
@@ -87,6 +92,15 @@ internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActi
     if (deleting != null) AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除这条便签？") }, text = { Text("删除后可从此前导出的备份恢复。") },
         confirmButton = { TextButton(onClick = { deleting?.let { actions.deleteNote(it.id) }; deleting = null; editingId = null }, enabled = !busy) { Text("删除") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } })
+}
+
+@Composable
+private fun NoteCopyButton(body: String, onCopy: (String, String) -> Unit) {
+    TextButton(onClick = { onCopy("便签正文", body) }, enabled = body.isNotEmpty()) {
+        Icon(Icons.Outlined.ContentCopy, null, Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("复制正文", fontSize = 12.sp)
+    }
 }
 
 @Composable
