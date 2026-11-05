@@ -74,7 +74,7 @@ internal object ImageTools {
             ZipOutputStream(file.outputStream().buffered()).use { archive ->
                 archive.setLevel(Deflater.NO_COMPRESSION)
                 tiles.forEachIndexed { index, tile ->
-                    archive.putNextEntry(ZipEntry("tile-${(index + 1).toString().padStart(2, '0')}.png"))
+                    archive.putNextEntry(ZipEntry(cropTileName(index)))
                     val image = crop(bitmap, tile.left, tile.top, tile.width, tile.height)
                     try { write(image, ImageFormat.PNG, 100, archive) }
                     finally { if (image !== bitmap) image.recycle() }

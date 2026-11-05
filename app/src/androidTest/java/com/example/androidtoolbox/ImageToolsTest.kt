@@ -8,6 +8,7 @@ import androidx.exifinterface.media.ExifInterface
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.androidtoolbox.core.*
+import com.example.androidtoolbox.ui.writeImageResult
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -47,6 +48,11 @@ class ImageToolsTest {
                                     assertEquals(original.getPixel(cell.left + x, cell.top + y), tile.getPixel(x, y))
                                 }
                             } finally { tile.recycle() }
+                        }
+                        withFile(".png") { destination ->
+                            resolver.writeImageResult(Uri.fromFile(destination), archive, 5)
+                            val expected = zip.getInputStream(entries[5]).use { it.readBytes() }
+                            assertArrayEquals(expected, destination.readBytes())
                         }
                     }
                 }

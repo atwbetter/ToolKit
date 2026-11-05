@@ -1,6 +1,7 @@
 package com.example.androidtoolbox.ui
 
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
@@ -48,13 +49,20 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.get
 import androidx.core.graphics.withSave
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 import com.example.androidtoolbox.core.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.DataInputStream
 import java.io.File
+import java.io.InputStream
 import java.io.Serializable
 import java.util.Locale
 import java.util.zip.ZipFile
@@ -81,6 +89,7 @@ internal enum class ImageOperation(val label: String, val group: ImageGroup, val
 private data class ImagePreview(val source: ImageSource, val bitmap: Bitmap)
 private data class LoadedImages(val sources: List<ImageSource>, val preview: ImagePreview, val palette: List<Int>)
 private val selectedImagesSaver = listSaver<List<String>, String>(save = { it }, restore = { it.toList() })
+private val imageSaveLock = Mutex()
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -88,6 +97,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     val resolver = context.contentResolver
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     val cache = remember(context) { File(context.cacheDir, "image-tools") }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -97,6 +107,9 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     var multiple by rememberSaveable(stateSaver = selectedImagesSaver) { mutableStateOf(emptyList()) }
     var resultName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSave by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingTile by rememberSaveable { mutableStateOf<Int?>(null) }
+    var saveDestination by rememberSaveable { mutableStateOf<String?>(null) }
+    var tileSave by rememberSaveable { mutableStateOf<CropTileSave?>(null) }
     var watermark by rememberSaveable { mutableStateOf(WatermarkStyle()) }
     var cropMode by rememberSaveable { mutableStateOf(CropMode()) }
     var border by rememberSaveable { mutableStateOf(BorderStyle()) }
@@ -111,6 +124,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
 
     fun clearResult() {
         resultName = null
+        tileSave = null
         notice = null
         error = null
     }
@@ -121,18 +135,31 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         clearResult()
     }
 
-    fun work(action: suspend () -> Unit) {
-        if (working) return
-        working = true
+    suspend fun performWork(action: suspend () -> Unit) {
         notice = null
         error = null
-        scope.launch {
-            try { action() }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: OutOfMemoryError) { error = "内存不足，请先缩小图片后再处理" }
-            catch (failure: Exception) { error = failure.message ?: "处理失败，请重试" }
-            finally { working = false }
-        }
+        try { action() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: OutOfMemoryError) { error = "内存不足，请先缩小图片后再处理" }
+        catch (failure: Exception) { error = failure.message ?: "处理失败，请重试" }
+        finally { working = false }
+    }
+
+    fun work(action: suspend () -> Unit) {
+        if (working || pendingSave != null) return
+        working = true
+        scope.launch { performWork(action) }
+    }
+
+    fun clearSaveRequest() {
+        pendingSave = null
+        pendingTile = null
+        saveDestination = null
+    }
+
+    fun pendingBatch(): CropTileSave? {
+        val index = pendingTile ?: return null
+        return tileSave?.takeIf { it.archiveName == pendingSave && pendingSave == resultName && it.nextIndex == index }
     }
 
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -146,35 +173,79 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val openMultiple = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.size in 2..ImageTools.MAX_STITCH_IMAGES) {
             multiple = uris.map(Uri::toString)
-            resultName = null
-            error = null
-            notice = null
+            clearResult()
         } else if (uris.isNotEmpty()) {
             error = "请一次选择 2–8 张图片"
         }
     }
     val save = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { response ->
-        val name = pendingSave
-        pendingSave = null
         val uri = response.data?.data
-        if (response.resultCode == Activity.RESULT_OK && uri != null && name != null) work {
-            withContext(Dispatchers.IO) {
-                val file = File(cache, name)
-                check(file.isFile) { "临时结果已失效，请重新生成" }
-                val output = resolver.openOutputStream(uri, "wt") ?: error("无法打开保存位置")
-                output.use { stream -> file.inputStream().use { it.copyTo(stream) } }
+        if (response.resultCode == Activity.RESULT_OK && uri != null && pendingSave != null) {
+            saveDestination = uri.toString()
+        } else {
+            pendingBatch()?.let { batch ->
+                tileSave = batch.copy(active = false)
+                notice = "逐张保存已暂停，已保存 ${batch.saved} / ${batch.total} 张"
             }
-            notice = "已保存文件"
+            clearSaveRequest()
         }
     }
 
-    fun saveResult(name: String, mime: String) {
+    LaunchedEffect(saveDestination) {
+        val destination = saveDestination?.toUri() ?: return@LaunchedEffect
+        val name = pendingSave ?: return@LaunchedEffect
+        val tile = pendingTile
+        val batch = pendingBatch()
+        if (tile != null && batch == null) {
+            clearSaveRequest()
+            return@LaunchedEffect
+        }
+        if (batch != null) tileSave = batch.copy(active = false)
+        working = true
+        try {
+            performWork {
+                // Reuse the same destination after activity recreation, without concurrent writes.
+                withContext(Dispatchers.IO) {
+                    imageSaveLock.withLock { resolver.writeImageResult(destination, File(cache, name), tile) }
+                }
+                if (batch == null) {
+                    notice = "已保存文件"
+                } else {
+                    val updated = batch.afterSaved(checkNotNull(tile))
+                    tileSave = updated
+                    if (updated.nextIndex == null) notice = "已逐张保存 ${updated.total} 张图片"
+                }
+            }
+        } finally {
+            if (isActive) clearSaveRequest()
+        }
+    }
+
+    fun saveResult(name: String, mime: String, tile: Int? = null) {
+        if (pendingSave != null) return
         pendingSave = name
-        save.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            type = mime
-            addCategory(Intent.CATEGORY_OPENABLE)
-            putExtra(Intent.EXTRA_TITLE, "toolbox-image-${System.currentTimeMillis()}.${File(name).extension}")
-        })
+        pendingTile = tile
+        try {
+            save.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                type = mime
+                addCategory(Intent.CATEGORY_OPENABLE)
+                val title = tile?.let(::cropTileName) ?: "toolbox-image-${System.currentTimeMillis()}.${File(name).extension}"
+                putExtra(Intent.EXTRA_TITLE, title)
+            })
+        } catch (_: android.content.ActivityNotFoundException) {
+            clearSaveRequest()
+            if (tile != null) tileSave = tileSave?.copy(active = false)
+            error = "系统文件保存界面不可用"
+        }
+    }
+
+    LaunchedEffect(tileSave, pendingSave, working, resultName, lifecycleState) {
+        val batch = tileSave ?: return@LaunchedEffect
+        val index = batch.nextIndex ?: return@LaunchedEffect
+        if (batch.active && batch.archiveName == resultName && !working && pendingSave == null &&
+            lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
+            saveResult(batch.archiveName, ImageFormat.PNG.mime, index)
+        }
     }
 
     LaunchedEffect(cache) {
@@ -197,7 +268,11 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     }
     val images = load?.getOrNull()
     val source = images?.preview?.source
-    val crop = source?.let { customCrop ?: CropFields.full(it) }
+    val scopeMode = cropMode.resolveScope(customCrop != null)
+    val currentCropMode = cropMode.copy(scope = scopeMode)
+    val crop = source?.let {
+        if (scopeMode == CropScope.CUSTOM) customCrop ?: CropFields.full(it) else CropFields.full(it)
+    }
     var pickedColor by remember(source?.uri) { mutableStateOf<Int?>(null) }
 
     fun updateCrop(fields: CropFields) {
@@ -208,7 +283,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     }
 
     fun run(extension: String, encode: (File) -> Unit) = work {
-        resultName = null
+        clearResult()
         resultName = withContext(Dispatchers.IO) {
             check(cache.isDirectory || cache.mkdirs()) { "无法创建临时目录" }
             val file = File.createTempFile("toolbox-image-", ".$extension", cache)
@@ -268,8 +343,8 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                         } else {
                             SourcePreview(
                                 images.preview, selection,
-                                selectCrop = if (!working && selection != null) ::updateCrop else null,
-                                cropMode = cropMode,
+                                selectCrop = if (!working && selection != null && scopeMode == CropScope.CUSTOM) ::updateCrop else null,
+                                cropMode = currentCropMode,
                                 pickColor = if (operation == ImageOperation.COLOR) ({ color -> pickedColor = color }) else null,
                                 watermark = watermarkPreview,
                             )
@@ -304,7 +379,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 } else {
                     key(operation, source?.uri) {
                         ImageOperationControls(
-                            operation, images?.sources.orEmpty(), crop, ::updateCrop, cropMode,
+                            operation, images?.sources.orEmpty(), crop, ::updateCrop, currentCropMode,
                             updateCropMode = {
                                 if (cropMode != it) {
                                     cropMode = it
@@ -338,14 +413,27 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                     }
                 }
                 if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (resultName?.endsWith(".zip") != true) error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }
         resultName?.takeUnless { operation == ImageOperation.BORDER && showingBorderPreview }?.let { name ->
             item {
                 key(name) {
-                    ImageResultPanel(File(cache, name), source.takeIf { operation == ImageOperation.COMPRESS }, working,
+                    val saved = tileSave?.takeIf { it.archiveName == name }
+                    ImageResultPanel(
+                        File(cache, name), source.takeIf { operation == ImageOperation.COMPRESS },
+                        working = working || pendingSave != null || saved?.active == true,
                         save = { mime -> saveResult(name, mime) },
+                        savedTiles = saved?.saved ?: 0,
+                        saveError = error,
+                        saveTiles = { total ->
+                            if (!working && pendingSave == null) {
+                                notice = null
+                                error = null
+                                val resume = tileSave?.takeIf { it.archiveName == name && it.total == total && it.nextIndex != null }
+                                tileSave = (resume ?: CropTileSave(name, total)).copy(active = true)
+                            }
+                        },
                         reuse = {
                             single = Uri.fromFile(File(cache, name)).toString()
                             cropMode = CropMode()
@@ -382,7 +470,25 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     }
 }
 
-private fun android.content.ContentResolver.readPreview(file: File): ImagePreview {
+internal fun ContentResolver.writeImageResult(destination: Uri, file: File, tile: Int?) {
+    check(file.isFile) { "临时结果已失效，请重新生成" }
+    fun copy(input: InputStream) {
+        input.use { stream ->
+            val output = openOutputStream(destination, "wt") ?: error("无法打开保存位置")
+            output.use { stream.copyTo(it) }
+        }
+    }
+    if (tile == null) {
+        copy(file.inputStream())
+    } else {
+        ZipFile(file).use { archive ->
+            val entry = checkNotNull(archive.getEntry(cropTileName(tile))) { "未找到第 ${tile + 1} 张图片" }
+            copy(archive.getInputStream(entry))
+        }
+    }
+}
+
+private fun ContentResolver.readPreview(file: File): ImagePreview {
     check(file.isFile) { "临时结果已失效，请重新生成" }
     val source = readImageSource(Uri.fromFile(file))
     return ImagePreview(source, ImageTools.preview(this, source))
@@ -425,12 +531,16 @@ private suspend fun <T> imageLoad(block: () -> T): Result<T> {
     catch (failure: Exception) { Result.failure(failure) }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ImageResultPanel(
     file: File,
     original: ImageSource?,
     working: Boolean,
     save: (String) -> Unit,
+    savedTiles: Int,
+    saveError: String?,
+    saveTiles: (Int) -> Unit,
     reuse: () -> Unit,
     copyText: (File) -> Unit,
 ) {
@@ -480,8 +590,18 @@ private fun ImageResultPanel(
             }
             is Int -> {
                 ImageDetail("${loaded} 张 PNG · ${Formatter.formatFileSize(context, file.length())}")
-                ImageDetail("ZIP 内的图片按从左到右、从上到下的顺序编号。")
-                Button({ save("application/zip") }, enabled = !working) { Text("保存全部（ZIP）") }
+                ImageDetail("分块按从左到右、从上到下编号。逐张保存时，每张会单独打开保存界面。")
+                if (savedTiles > 0) ImageDetail("已逐张保存 $savedTiles / $loaded 张")
+                saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                val label = when {
+                    savedTiles >= loaded -> "重新逐张保存"
+                    savedTiles > 0 -> "继续逐张保存"
+                    else -> "逐张保存"
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button({ save("application/zip") }, enabled = !working) { Text("保存全部（ZIP）") }
+                    OutlinedButton({ saveTiles(loaded) }, enabled = !working) { Text(label) }
+                }
             }
             else -> if (result == null) LinearProgressIndicator(Modifier.fillMaxWidth())
                 else Text(result?.exceptionOrNull()?.message ?: "无法读取处理结果", color = MaterialTheme.colorScheme.error)
@@ -597,7 +717,7 @@ private fun SourcePreview(
     }
     val description = when {
         watermark != null -> "水印效果预览"
-        crop != null -> "原图与${cropMode.grid.label}裁剪框"
+        crop != null -> "${cropMode.scope?.label.orEmpty()}，${cropMode.grid.label}预览"
         else -> "图片预览"
     }
     Image(bitmapImage, description,

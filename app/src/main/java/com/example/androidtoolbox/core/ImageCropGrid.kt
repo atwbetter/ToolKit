@@ -11,7 +11,7 @@ internal data class CropRegion(val left: Int, val top: Int, val right: Int, val 
 }
 
 internal enum class CropGrid(val label: String, val columns: Int, val rows: Int) {
-    FREE("自由裁剪", 1, 1),
+    FREE("单张裁剪", 1, 1),
     FOUR("四宫格", 2, 2),
     NINE("九宫格", 3, 3),
     HORIZONTAL("横向三格", 3, 1),
@@ -32,4 +32,35 @@ internal enum class CropGrid(val label: String, val columns: Int, val rows: Int)
     }
 }
 
-internal data class CropMode(val grid: CropGrid = CropGrid.FREE, val tile: Int? = null) : Serializable
+internal enum class CropScope(val label: String) {
+    FULL("全图裁剪"), CUSTOM("自由区域裁剪"),
+}
+
+internal data class CropMode(
+    val grid: CropGrid = CropGrid.FREE,
+    val tile: Int? = null,
+    val scope: CropScope? = null,
+) : Serializable {
+    fun resolveScope(hasCustomRegion: Boolean) =
+        scope ?: if (hasCustomRegion) CropScope.CUSTOM else CropScope.FULL
+
+    companion object {
+        private const val serialVersionUID = -4713427418404315527L
+    }
+}
+
+internal fun cropTileName(index: Int) = "tile-${(index + 1).toString().padStart(2, '0')}.png"
+
+internal data class CropTileSave(
+    val archiveName: String,
+    val total: Int,
+    val saved: Int = 0,
+    val active: Boolean = false,
+) : Serializable {
+    val nextIndex: Int? get() = saved.takeIf { it < total }
+
+    fun afterSaved(index: Int): CropTileSave {
+        check(index == nextIndex)
+        return copy(saved = saved + 1, active = saved + 1 < total)
+    }
+}

@@ -1,11 +1,39 @@
 package com.example.androidtoolbox
 
 import com.example.androidtoolbox.core.CropGrid
+import com.example.androidtoolbox.core.CropMode
 import com.example.androidtoolbox.core.CropRegion
+import com.example.androidtoolbox.core.CropScope
+import com.example.androidtoolbox.core.CropTileSave
+import com.example.androidtoolbox.core.cropTileName
 import org.junit.Assert.*
 import org.junit.Test
 
 class ImageCropGridTest {
+    @Test fun explicitScopeOverridesTheRememberedCustomRegion() {
+        val earlierMode = CropMode(CropGrid.NINE, tile = 5)
+        assertEquals(CropScope.FULL, earlierMode.resolveScope(false))
+        assertEquals(CropScope.CUSTOM, earlierMode.resolveScope(true))
+        val full = earlierMode.copy(scope = CropScope.FULL)
+        assertEquals(CropScope.FULL, full.resolveScope(true))
+        assertEquals(CropScope.CUSTOM, full.copy(scope = CropScope.CUSTOM).resolveScope(false))
+        assertEquals(5, full.tile)
+    }
+
+    @Test fun sequentialSaveResumesAtTheFirstUnsavedTile() {
+        var batch = CropTileSave("result.zip", total = 4, active = true)
+        batch = batch.afterSaved(0)
+        val paused = batch.copy(active = false)
+        assertEquals(1, paused.saved)
+        assertEquals("tile-02.png", cropTileName(checkNotNull(paused.nextIndex)))
+        assertThrows(IllegalStateException::class.java) { paused.afterSaved(0) }
+        batch = paused.copy(active = true)
+        for (index in 1..3) batch = batch.afterSaved(index)
+        assertEquals(4, batch.saved)
+        assertNull(batch.nextIndex)
+        assertFalse(batch.active)
+    }
+
     @Test fun gridCoversEveryPixelInAnUnevenOffsetSelectionExactlyOnce() {
         val region = CropRegion(2, 5, 13, 12)
         for (grid in CropGrid.entries) {
