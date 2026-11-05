@@ -1,7 +1,6 @@
 package com.example.androidtoolbox.ui
 
 import android.graphics.Bitmap
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -60,7 +59,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,7 +68,6 @@ import com.example.androidtoolbox.core.CryptoEngine
 import com.example.androidtoolbox.core.LocalNote
 import com.example.androidtoolbox.core.OtpAccount
 import com.example.androidtoolbox.core.OtpEngine
-import com.example.androidtoolbox.core.QrCodec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -114,128 +111,6 @@ internal fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean =
     Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().height(48.dp),
         shape = RoundedCornerShape(13.dp), colors = ButtonDefaults.buttonColors(containerColor = Indigo)) {
         Text(text, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-internal fun QrPage(
-    scannedText: String?,
-    onScan: () -> Unit,
-    onSave: (Bitmap) -> Unit,
-    onShare: (Bitmap) -> Unit,
-    onCopy: (String, String) -> Unit,
-    onImage: () -> Unit,
-    back: () -> Unit,
-) {
-    var mode by rememberSaveable { mutableStateOf(0) }
-    var content by rememberSaveable { mutableStateOf("https://example.com") }
-    var kind by rememberSaveable { mutableStateOf("网址") }
-    var wifiName by rememberSaveable { mutableStateOf("") }
-    var wifiPassword by rememberSaveable { mutableStateOf("") }
-    var wifiSecurity by rememberSaveable { mutableStateOf("WPA") }
-    var encoded by rememberSaveable { mutableStateOf("https://example.com") }
-    var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(scannedText) { if (scannedText != null) mode = 1 }
-    val bitmap = remember(encoded) { runCatching { QrCodec.generate(encoded) }.getOrNull() }
-    Column {
-        Header("二维码", "生成与解析 · 支持文本、网址、Wi-Fi", back)
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            item {
-                Row(Modifier.fillMaxWidth().background(Pale, RoundedCornerShape(13.dp)).padding(4.dp)) {
-                    listOf("生成", "扫描解析").forEachIndexed { i, label ->
-                        val selected = mode == i
-                        Box(Modifier.weight(1f).height(36.dp)
-                            .background(if (selected) Color.White else Color.Transparent, RoundedCornerShape(10.dp))
-                            .clickable { mode = i }, contentAlignment = Alignment.Center) {
-                            Text(label, color = if (selected) Indigo else Muted, fontSize = 13.sp,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
-                        }
-                    }
-                }
-            }
-            if (mode == 0) {
-                item {
-                    Text("内容类型", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("网址", "文本", "Wi-Fi").forEach {
-                            FilterChip(selected = kind == it, onClick = { kind = it }, label = { Text(it) })
-                        }
-                    }
-                }
-                if (kind == "Wi-Fi") item {
-                    Text("Wi-Fi 网络", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    OutlinedTextField(wifiName, { wifiName = it }, modifier = Modifier.fillMaxWidth(),
-                        singleLine = true, label = { Text("网络名称（SSID）") })
-                    OutlinedTextField(wifiPassword, { wifiPassword = it }, modifier = Modifier.fillMaxWidth(),
-                        singleLine = true, label = { Text("密码") })
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("WPA", "WEP", "nopass").forEach { value ->
-                            FilterChip(selected = wifiSecurity == value, onClick = { wifiSecurity = value }, label = { Text(value) })
-                        }
-                    }
-                } else item {
-                    Text("输入内容", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    OutlinedTextField(content, { content = it }, modifier = Modifier.fillMaxWidth(),
-                        minLines = 2, maxLines = 4, shape = RoundedCornerShape(14.dp),
-                        placeholder = { Text("输入文字或网址") })
-                }
-                item {
-                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                        Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (bitmap != null) Image(bitmap.asImageBitmap(), "二维码预览", Modifier.size(190.dp))
-                            else Text("暂无预览", color = Muted)
-                            Spacer(Modifier.height(8.dp))
-                            Text("二维码预览", color = Muted, fontSize = 11.sp)
-                        }
-                    }
-                }
-                item {
-                    PrimaryButton("生成二维码", onClick = {
-                        val value = if (kind == "Wi-Fi") {
-                            fun escape(v: String) = v.replace("\\", "\\\\").replace(";", "\\;").replace(":", "\\:").replace(",", "\\,")
-                            if (wifiName.isBlank()) "" else "WIFI:T:$wifiSecurity;S:${escape(wifiName)};P:${escape(wifiPassword)};;"
-                        } else content
-                        if (value.isBlank()) error = "请输入内容" else {
-                            encoded = value
-                            error = null
-                        }
-                    })
-                    if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton(onClick = { bitmap?.let(onSave) }, enabled = bitmap != null) { Text("保存图片") }
-                        TextButton(onClick = { bitmap?.let(onShare) }, enabled = bitmap != null) { Text("分享") }
-                    }
-                }
-            } else {
-                item {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Outlined.QrCode2, null, tint = Indigo, modifier = Modifier.size(48.dp))
-                            Text("扫描二维码", color = Ink, fontWeight = FontWeight.Bold)
-                            Text("相机扫码与图片解析均在本机完成，无需联网或 Google Play 服务。", color = Muted, fontSize = 13.sp)
-                            PrimaryButton("选择图片 · 离线解析", onImage)
-                            OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("相机扫码") }
-                        }
-                    }
-                }
-                if (scannedText != null) item {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("解析结果", color = Ink, fontWeight = FontWeight.Bold)
-                            SelectionContainer { Text(scannedText, color = Ink) }
-                            TextButton(onClick = { onCopy("二维码内容", scannedText) }) {
-                                Icon(Icons.Outlined.ContentCopy, null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("复制内容")
-                            }
-                        }
-                    }
-                }
-            }
-            item { Spacer(Modifier.height(20.dp)) }
-        }
     }
 }
 

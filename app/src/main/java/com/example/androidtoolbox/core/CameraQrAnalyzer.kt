@@ -7,7 +7,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal class CameraQrAnalyzer(
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
-    private val onResult: (String) -> Unit,
+    private val qrOnly: Boolean = false,
+    private val onResult: (CodeResult) -> Unit,
 ) : ImageAnalysis.Analyzer {
     @Volatile var active = true
     private val delivered = AtomicBoolean(false)
@@ -22,8 +23,8 @@ internal class CameraQrAnalyzer(
             lastAttempt = now
             val plane = image.planes.firstOrNull() ?: return
             val result = try {
-                QrFrameDecoder.decode(plane.buffer, image.width, image.height, plane.rowStride,
-                    plane.pixelStride, image.imageInfo.rotationDegrees)
+                QrFrameDecoder.decodeResult(plane.buffer, image.width, image.height, plane.rowStride,
+                    plane.pixelStride, image.imageInfo.rotationDegrees, qrOnly)
             } catch (_: IllegalArgumentException) { null }
             if (active && result != null && delivered.compareAndSet(false, true)) onResult(result)
         } finally {

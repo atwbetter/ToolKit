@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
     private var busy by mutableStateOf(false)
     private var lastBackup by mutableStateOf<String?>(null)
     private var importData by mutableStateOf<BackupData?>(null)
-    private var qrScanned by mutableStateOf<String?>(null)
+    private var qrScanned by mutableStateOf<CodeResult?>(null)
     private var pendingQr: Bitmap? = null
     private var otpMigration by mutableStateOf<OtpMigrationBatch?>(null)
     private var otpManualRequested by mutableStateOf(false)
@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
             runCatching { withContext(Dispatchers.IO) {
                 contentResolver.openOutputStream(uri, "wt")?.use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
                     ?: error("无法打开文件")
-            } }.onSuccess { toast("二维码已保存") }.onFailure { toast("保存失败：${it.message}") }
+            } }.onSuccess { toast("码图已保存") }.onFailure { toast("保存失败：${it.message}") }
         }
         pendingQr = null
     }
@@ -78,8 +78,8 @@ class MainActivity : ComponentActivity() {
     private val openQrImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) lifecycleScope.launch {
             busy = true
-            runCatching { withContext(Dispatchers.IO) { decodeQrImage(uri) } }
-                .onSuccess { qrScanned = it }.onFailure { toast("图片中未找到可识别的二维码") }
+            runCatching { withContext(Dispatchers.IO) { decodeCodeImage(uri) } }
+                .onSuccess { qrScanned = it }.onFailure { toast(it.message ?: "图片解析失败") }
             busy = false
         }
     }
@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
             busy = true
             val result = runCatching { withContext(Dispatchers.IO) {
                 require(uris.size <= 100) { "每次最多选择 100 张图片，可分次继续添加" }
-                uris.map(::decodeQrImage)
+                uris.map { decodeCodeImage(it, qrOnly = true).text }
             } }
             busy = false
             result.onSuccess(::receiveOtpValues).onFailure { toast(it.message ?: "图片中未找到可识别的二维码") }
@@ -99,7 +99,11 @@ class MainActivity : ComponentActivity() {
             val data = result.data
             if (data?.getStringExtra(QrScannerActivity.EXTRA_ACTION) == QrScannerActivity.ACTION_IMAGE)
                 openQrImage.launch(arrayOf("image/*"))
-            else data?.getStringExtra(QrScannerActivity.EXTRA_VALUE)?.let { qrScanned = it }
+            else data?.getStringExtra(QrScannerActivity.EXTRA_VALUE)?.let {
+                val format = runCatching { com.google.zxing.BarcodeFormat.valueOf(data.getStringExtra(QrScannerActivity.EXTRA_FORMAT).orEmpty()) }
+                    .getOrDefault(com.google.zxing.BarcodeFormat.QR_CODE)
+                qrScanned = CodeResult(it, format)
+            }
         }
     }
     private val scanOtp = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -142,7 +146,7 @@ class MainActivity : ComponentActivity() {
                 otpManualRequested = otpManualRequested, onOtpManualShown = { otpManualRequested = false },
                 otpMigration = otpMigration, onImportOtpText = { receiveOtpValues(listOf(it)) },
                 onConfirmOtpMigration = ::confirmOtpMigration, onCancelOtpMigration = { otpMigration = null },
-                onSaveQr = { pendingQr = it; createQr.launch("toolbox-qr-${System.currentTimeMillis()}.png") },
+                onSaveQr = { pendingQr = it; createQr.launch("toolbox-code-${System.currentTimeMillis()}.png") },
                 onShareQr = ::shareQr, onCopy = ::copy,
             )
         }
@@ -259,14 +263,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun decodeQrImage(uri: android.net.Uri): String {
+    private fun decodeCodeImage(uri: android.net.Uri, qrOnly: Boolean = false): CodeResult {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法读取图片" }
-        val opts = BitmapFactory.Options()
+        val opts = BitmapFactory.Options().apply { inSampleSize = 1 }
         while (bounds.outWidth.toLong() / opts.inSampleSize * (bounds.outHeight / opts.inSampleSize) > 4_000_000) opts.inSampleSize *= 2
         val bitmap = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: error("无法读取图片")
-        return try { QrCodec.decode(bitmap) } finally { bitmap.recycle() }
+        return try { BarcodeCodec.decode(bitmap, qrOnly) } finally { bitmap.recycle() }
     }
     private fun deleteAccount(account: OtpAccount) {
         runTask {
@@ -275,11 +279,16 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun shareQr(bitmap: Bitmap) {
-        runCatching {
-            val file = File.createTempFile("toolbox-qr-", ".png", File(cacheDir, "shared").apply { mkdirs() })
-            file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-            shareFile(file, "image/png", "分享二维码")
-        }.onFailure { toast(it.message ?: "分享失败") }
+        lifecycleScope.launch {
+            runCatching {
+                val file = withContext(Dispatchers.IO) {
+                    File.createTempFile("toolbox-code-", ".png", File(cacheDir, "shared").apply { mkdirs() }).also { file ->
+                        file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                    }
+                }
+                shareFile(file, "image/png", "分享码图")
+            }.onFailure { toast(it.message ?: "分享失败") }
+        }
     }
     private fun shareFile(file: File, mime: String, title: String) {
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)

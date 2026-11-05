@@ -45,14 +45,14 @@ private val catalog = listOf(
     Tool("UNITS", "单位换算", "长度 · 质量 · 温度 · 存储", "效率", Icons.Outlined.SwapHoriz),
     Tool("TIME", "时间戳", "日期与秒 / 毫秒互转", "开发", Icons.Outlined.Schedule),
     Tool("PASSWORD", "密码生成", "安全随机 · 自定义字符", "安全", Icons.Outlined.Key),
-    Tool("QR", "二维码", "生成 · 离线图片解析", "效率", Icons.Outlined.QrCode2),
+    Tool("QR", "二维码 / 条形码", "生成 · 扫码 · 离线图片解析", "效率", Icons.Outlined.QrCode2),
     Tool("CRYPTO", "加解密", "AES · RSA · 摘要", "安全", Icons.Outlined.Lock),
     Tool("OTP", "身份验证器", "动态 2FA 验证码", "安全", Icons.Outlined.Security),
 )
 
 @Composable
 fun ToolboxApp(
-    accounts: List<OtpAccount>, otpStoreError: String?, qrScanned: String?,
+    accounts: List<OtpAccount>, otpStoreError: String?, qrScanned: CodeResult?,
     local: LocalSnapshot, busy: Boolean, storageError: String?, lastBackup: String?, importData: BackupData?, actions: LocalActions,
     onScanQr: () -> Unit, onScanOtp: () -> Unit, onImageQr: () -> Unit, onImageOtp: () -> Unit,
     onAddOtp: (OtpAccount) -> Unit, onDeleteOtp: (OtpAccount) -> Unit,

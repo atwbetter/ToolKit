@@ -84,10 +84,14 @@ class OtpMigrationTest {
             assertTrue(uri.length <= 1600)
             val matrix = QrCodec.matrix(uri, 1024)
             val pixels = IntArray(1024 * 1024) { i -> if (matrix[i % 1024, i / 1024]) 0xff000000.toInt() else 0xffffffff.toInt() }
+            val image = RGBLuminanceSource(1024, 1024, pixels)
+            // Validate pristine exported modules independently of geometric locator heuristics,
+            // then also exercise the same detection/fallback pipeline used by the application.
             val decoded = com.google.zxing.qrcode.QRCodeReader().decode(
-                BinaryBitmap(HybridBinarizer(RGBLuminanceSource(1024, 1024, pixels))),
-                mapOf(DecodeHintType.TRY_HARDER to true, DecodeHintType.CHARACTER_SET to "UTF-8")).text
+                BinaryBitmap(HybridBinarizer(image)),
+                mapOf(DecodeHintType.PURE_BARCODE to true, DecodeHintType.CHARACTER_SET to "UTF-8")).text
             assertEquals(uri, decoded)
+            assertEquals(uri, CodeDecoder.decode(image, qrOnly = true)?.text)
             batch = batch.add(OtpMigration.decode(decoded))
         }
         assertTrue(batch.complete); assertEquals(23, batch.accounts.size)

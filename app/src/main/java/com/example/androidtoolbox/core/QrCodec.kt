@@ -10,36 +10,25 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
 object QrCodec {
     fun decode(bitmap: Bitmap): String {
-        require(bitmap.width.toLong() * bitmap.height <= 8_000_000) { "图片过大" }
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        val source = com.google.zxing.RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
-        return com.google.zxing.qrcode.QRCodeReader().decode(
-            com.google.zxing.BinaryBitmap(com.google.zxing.common.HybridBinarizer(source)),
-            mapOf(com.google.zxing.DecodeHintType.TRY_HARDER to true, com.google.zxing.DecodeHintType.CHARACTER_SET to "UTF-8")).text
+        return BarcodeCodec.decode(bitmap, qrOnly = true).text
     }
 
-    fun matrix(content: String, size: Int = 768): BitMatrix {
+    fun matrix(content: String, size: Int = 768, correction: ErrorCorrectionLevel = ErrorCorrectionLevel.M): BitMatrix {
         require(content.isNotBlank()) { "请输入二维码内容" }
+        require(content.toByteArray(Charsets.UTF_8).size <= 2953) { "内容过长，请缩短文字或网址" }
+        require(size in 256..2048) { "二维码尺寸应为 256–2048 像素" }
         val hints = mapOf(
             EncodeHintType.CHARACTER_SET to "UTF-8",
-            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+            EncodeHintType.ERROR_CORRECTION to correction,
             EncodeHintType.MARGIN to 4,
         )
-        return MultiFormatWriter().encode(
-            content, BarcodeFormat.QR_CODE, size, size, hints
-        )
+        return try { MultiFormatWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints) }
+        catch (_: com.google.zxing.WriterException) { error("内容超出当前容错等级容量，请缩短内容或降低容错等级") }
     }
 
-    fun generate(content: String, size: Int = 768): Bitmap {
-        val matrix = matrix(content, size)
-        val pixels = IntArray(size * size)
-        for (y in 0 until size) for (x in 0 until size) {
-            pixels[y * size + x] = if (matrix[x, y]) Color.rgb(39, 50, 82) else Color.WHITE
-        }
-        return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).apply {
-            setPixels(pixels, 0, size, 0, 0, size, size)
-        }
+    fun generate(content: String, size: Int = 768, correction: ErrorCorrectionLevel = ErrorCorrectionLevel.M,
+        foreground: Int = Color.rgb(39, 50, 82)): Bitmap {
+        return renderMatrix(matrix(content, size, correction), foreground)
     }
 }
 

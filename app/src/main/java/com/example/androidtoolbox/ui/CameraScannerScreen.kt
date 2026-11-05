@@ -40,6 +40,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.androidtoolbox.core.CameraQrAnalyzer
+import com.example.androidtoolbox.core.CodeResult
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -48,7 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 internal fun CameraScannerScreen(
     otpOnly: Boolean, close: () -> Unit, onImage: () -> Unit, onManual: () -> Unit,
-    onScan: (String) -> String?,
+    onScan: (CodeResult) -> String?,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -79,24 +80,24 @@ internal fun CameraScannerScreen(
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(close) { Text("关闭") }
-                    Text(if (otpOnly) "扫描 2FA 二维码" else "扫描二维码", color = Color.White,
+                    Text(if (otpOnly) "扫描 2FA 二维码" else "扫描二维码 / 条形码", color = Color.White,
                         modifier = Modifier.weight(1f), fontSize = 18.sp)
                     Text("本机识别", color = Color(0xFFA8DCC7), fontSize = 11.sp)
                 }
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     if (permission && !cameraError) {
-                        CameraPreview(Modifier.fillMaxSize(), torch, zoom, scanError == null, retryToken,
+                        CameraPreview(Modifier.fillMaxSize(), torch, zoom, scanError == null, retryToken, otpOnly,
                             onReady = { flash, maximum -> hasFlash = flash; maxZoom = maximum; zoom = zoom.coerceIn(1f, maximum) },
                             onError = { cameraError = true; hasFlash = false; maxZoom = 1f },
                             onResult = { scanError = onScan(it) })
                         ScanGuide(Modifier.fillMaxSize())
-                        Text("将二维码放入框内 · 轻点画面对焦", color = Color.White, fontSize = 12.sp,
+                        Text(if (otpOnly) "将二维码放入框内 · 轻点画面对焦" else "将码图完整放入框内 · 条形码可横向或纵向", color = Color.White, fontSize = 12.sp,
                             modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp).background(Color.Black.copy(alpha = 0.5f)).padding(8.dp))
                     } else {
                         Column(Modifier.align(Alignment.Center).padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(if (!permission) "允许相机权限后即可扫码添加" else "暂时无法打开相机", color = Color.White)
-                            Text(if (!permission) "也可以选择二维码图片，或手动输入密钥。" else "请检查相机是否被其他应用占用，也可改用图片导入。",
+                            Text(if (!permission) "允许相机权限后即可扫码" else "暂时无法打开相机", color = Color.White)
+                            Text(if (!permission) { if (otpOnly) "也可以选择二维码图片，或手动输入密钥。" else "也可以选择二维码或条形码图片。" } else "请检查相机是否被其他应用占用，也可改用图片导入。",
                                 color = Color.LightGray, fontSize = 13.sp)
                             Button(onClick = { if (!permission) launcher.launch(Manifest.permission.CAMERA) else cameraError = false }) {
                                 Text(if (!permission) "授予相机权限" else "重试相机")
@@ -127,7 +128,7 @@ internal fun CameraScannerScreen(
                             Text(if (torch) "关闭补光灯" else "开启补光灯")
                         }
                     }
-                    Text(if (otpOnly) "支持普通 TOTP 与 Google 批量迁移二维码" else "无需联网，识别结果将返回二维码工具",
+                    Text(if (otpOnly) "支持普通 TOTP 与 Google 批量迁移二维码" else "无需联网，自动识别码制并返回工具页面",
                         color = Color.LightGray, fontSize = 11.sp)
                 }
             }
@@ -152,8 +153,8 @@ private fun ScanGuide(modifier: Modifier) {
 
 @Composable
 private fun CameraPreview(
-    modifier: Modifier, torch: Boolean, zoom: Float, scanEnabled: Boolean, retryToken: Int,
-    onReady: (Boolean, Float) -> Unit, onError: () -> Unit, onResult: (String) -> Unit,
+    modifier: Modifier, torch: Boolean, zoom: Float, scanEnabled: Boolean, retryToken: Int, qrOnly: Boolean,
+    onReady: (Boolean, Float) -> Unit, onError: () -> Unit, onResult: (CodeResult) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -171,8 +172,8 @@ private fun CameraPreview(
             scaleType = PreviewView.ScaleType.FIT_CENTER
         }
     }
-    val analyzer = remember(context, lifecycleOwner) {
-        CameraQrAnalyzer { result ->
+    val analyzer = remember(context, lifecycleOwner, qrOnly) {
+        CameraQrAnalyzer(qrOnly = qrOnly) { result ->
             mainExecutor.execute {
                 if (attached.get() && enabled && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) resultCallback(result)
             }

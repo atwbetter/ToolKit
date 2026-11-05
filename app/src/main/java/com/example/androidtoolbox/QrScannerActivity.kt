@@ -14,6 +14,7 @@ class QrScannerActivity : ComponentActivity() {
     companion object {
         const val EXTRA_OTP = "otp_only"
         const val EXTRA_VALUE = "qr_value"
+        const val EXTRA_FORMAT = "code_format"
         const val EXTRA_ACTION = "qr_action"
         const val ACTION_IMAGE = "image"
         const val ACTION_MANUAL = "manual"
@@ -28,12 +29,13 @@ class QrScannerActivity : ComponentActivity() {
             CameraScannerScreen(otpOnly = otpOnly, close = ::finish,
                 onImage = { complete(Intent().putExtra(EXTRA_ACTION, ACTION_IMAGE)) },
                 onManual = { complete(Intent().putExtra(EXTRA_ACTION, ACTION_MANUAL)) },
-                onScan = { value ->
+                onScan = { result ->
+                    val value = result.text
                     val error = if (otpOnly) runCatching {
                         if (value.trim().startsWith("otpauth-migration://")) OtpMigration.decode(value)
                         else OtpEngine.fromUri(value)
                     }.exceptionOrNull()?.let { it.message ?: "不是可导入的 2FA 二维码" } else null
-                    if (error == null) complete(Intent().putExtra(EXTRA_VALUE, value))
+                    if (error == null) complete(Intent().putExtra(EXTRA_VALUE, value).putExtra(EXTRA_FORMAT, result.format.name))
                     error
                 })
         }

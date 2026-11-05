@@ -1,16 +1,15 @@
 package com.example.androidtoolbox.core
 
-import com.google.zxing.BinaryBitmap
-import com.google.zxing.DecodeHintType
-import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.ReaderException
-import com.google.zxing.common.HybridBinarizer
-import com.google.zxing.qrcode.QRCodeReader
 import java.nio.ByteBuffer
 
 /** Reads only the Y plane; honours device padding, buffer offsets, pixel stride and rotation. */
 object QrFrameDecoder {
     fun decode(buffer: ByteBuffer, width: Int, height: Int, rowStride: Int, pixelStride: Int, rotation: Int): String? {
+        return decodeResult(buffer, width, height, rowStride, pixelStride, rotation, qrOnly = true)?.text
+    }
+
+    fun decodeResult(buffer: ByteBuffer, width: Int, height: Int, rowStride: Int, pixelStride: Int,
+        rotation: Int, qrOnly: Boolean = false): CodeResult? {
         require(width > 0 && height > 0 && width.toLong() * height <= 8_000_000) { "相机画面大小无效" }
         require(pixelStride > 0 && rowStride.toLong() >= (width - 1L) * pixelStride + 1) { "相机画面步长无效" }
         require(rotation in setOf(0, 90, 180, 270)) { "相机画面方向无效" }
@@ -31,14 +30,6 @@ object QrFrameDecoder {
             }
             luminance[index] = bytes.get(base + y * rowStride + x * pixelStride)
         }
-        val source = PlanarYUVLuminanceSource(luminance, outputWidth, outputHeight, 0, 0, outputWidth, outputHeight, false)
-        val reader = QRCodeReader()
-        val hints = mapOf(DecodeHintType.TRY_HARDER to true, DecodeHintType.CHARACTER_SET to "UTF-8")
-        for (candidate in listOf(source, source.invert())) {
-            try { return reader.decode(BinaryBitmap(HybridBinarizer(candidate)), hints).text }
-            catch (_: ReaderException) { /* No readable QR in this frame. */ }
-            finally { reader.reset() }
-        }
-        return null
+        return CodeDecoder.decode(CodeLuminanceSource(outputWidth, outputHeight, luminance), qrOnly)
     }
 }
