@@ -10,10 +10,20 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.ByteBuffer
+import java.util.Base64
 
 class BarcodeCodecTest {
     private fun source(matrix: BitMatrix): LuminanceSource = CodeLuminanceSource(matrix.width, matrix.height,
         ByteArray(matrix.width * matrix.height) { if (matrix[it % matrix.width, it / matrix.width]) 0 else 255.toByte() })
+
+    @Test fun fullSizeImageDataUrlFitsAndDecodesAsQr() {
+        val image = ByteArray(ImageTools.MAX_QR_IMAGE) { (it * 193).toByte() }
+        val payload = "data:image/png;base64," + Base64.getEncoder().encodeToString(image)
+        val matrix = QrCodec.matrix(payload, correction = ErrorCorrectionLevel.L)
+        val read = CodeDecoder.decode(source(matrix), qrOnly = true)
+        assertEquals(payload, read?.text)
+        assertArrayEquals(image, Base64.getDecoder().decode(read!!.text.substringAfter(',')))
+    }
 
     @Test fun retailCheckDigitsMatchKnownProductNumbersAndPreserveLeadingZeroes() {
         for ((format, complete) in listOf(CodeFormat.EAN13 to "4006381333931", CodeFormat.EAN8 to "96385074", CodeFormat.UPCA to "036000291452")) {

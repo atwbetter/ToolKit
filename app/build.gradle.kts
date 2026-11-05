@@ -43,6 +43,7 @@ dependencies {
     implementation("androidx.fragment:fragment:1.8.9")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("com.google.zxing:core:3.5.4")
     val cameraX = "1.6.2"
     implementation("androidx.camera:camera-camera2:$cameraX")

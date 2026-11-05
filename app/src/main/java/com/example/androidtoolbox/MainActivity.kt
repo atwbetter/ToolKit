@@ -299,7 +299,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun copy(label: String, value: String) {
         val clip = ClipData.newPlainText(label, value)
-        if (label in setOf("验证码", "密码", "处理结果")) {
+        if (label in setOf("验证码", "密码", "处理结果", "图片 Base64", "EXIF")) {
             clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         }
         (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)

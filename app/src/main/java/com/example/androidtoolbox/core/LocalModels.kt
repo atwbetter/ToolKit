@@ -17,4 +17,4 @@ data class LocalSnapshot(
 )
 
 // Stable IDs are persisted and exported; never persist translated display labels.
-val TOOL_IDS = setOf("QR", "CRYPTO", "OTP", "NOTES", "JSON", "TEXT", "UNITS", "PASSWORD", "TIME")
+val TOOL_IDS = setOf("QR", "CRYPTO", "OTP", "NOTES", "JSON", "TEXT", "UNITS", "PASSWORD", "TIME", "IMAGE")

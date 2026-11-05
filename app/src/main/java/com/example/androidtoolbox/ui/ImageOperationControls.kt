@@ -1,0 +1,206 @@
+package com.example.androidtoolbox.ui
+
+import android.graphics.Bitmap
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import com.example.androidtoolbox.core.ImageFormat
+import com.example.androidtoolbox.core.ImageSource
+import com.example.androidtoolbox.core.ImageTools
+import com.example.androidtoolbox.core.WatermarkPosition
+import java.io.File
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ImageOperationControls(
+    operation: ImageOperation,
+    sources: List<ImageSource>,
+    crop: CropFields?,
+    updateCrop: (CropFields) -> Unit,
+    working: Boolean,
+    run: (ImageFormat?, (File) -> Unit) -> Unit,
+) {
+    val resolver = LocalContext.current.contentResolver
+    val source = sources.firstOrNull()
+    val enabled = !working
+    fun image(format: ImageFormat = ImageFormat.PNG, quality: Int = 100, create: () -> Bitmap) {
+        run(format) { file ->
+            val bitmap = create()
+            try { file.outputStream().use { ImageTools.write(bitmap, format, quality, it) } }
+            finally { bitmap.recycle() }
+        }
+    }
+    fun edit(transform: (Bitmap) -> Bitmap) {
+        image { ImageTools.edit(resolver, checkNotNull(source), transform) }
+    }
+
+    Text(operation.label, fontWeight = FontWeight.Bold)
+    if (source == null && operation != ImageOperation.QR) {
+        ImageDetail(if (operation == ImageOperation.STITCH) "选择图片后设置拼接方向" else "选择图片后开始处理")
+        return
+    }
+    when (operation) {
+        ImageOperation.CROP -> {
+            val fields = crop ?: return
+            ImageDetail("在原图上拖出裁剪框，或输入像素坐标。")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PixelField("左上 X", fields.x, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(x = it)) }
+                PixelField("左上 Y", fields.y, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(y = it)) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PixelField("宽度", fields.width, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(width = it)) }
+                PixelField("高度", fields.height, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(height = it)) }
+            }
+            TextButton({ updateCrop(CropFields.full(checkNotNull(source))) }, enabled = enabled) { Text("重置裁剪框") }
+            val bounds = fields.rectangle()
+            PrimaryButton(operation.action, {
+                checkNotNull(bounds)
+                edit { ImageTools.crop(it, bounds.left, bounds.top, bounds.width(), bounds.height()) }
+            }, enabled = enabled && bounds != null && !bounds.isEmpty)
+        }
+        ImageOperation.ROTATE -> {
+            var degrees by rememberSaveable { mutableIntStateOf(0) }
+            var horizontal by rememberSaveable { mutableStateOf(false) }
+            var vertical by rememberSaveable { mutableStateOf(false) }
+            Choices(listOf(0, 90, 180, 270), degrees, enabled, { if (it == 0) "原角度" else "$it°" }) { degrees = it }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(horizontal, { horizontal = !horizontal }, enabled = enabled, label = { Text("水平翻转") })
+                FilterChip(vertical, { vertical = !vertical }, enabled = enabled, label = { Text("垂直翻转") })
+            }
+            ImageDetail("按原图方向先翻转，再顺时针旋转。")
+            PrimaryButton(operation.action, { edit { ImageTools.orient(it, degrees, horizontal, vertical) } }, enabled)
+        }
+        ImageOperation.RESIZE -> {
+            val original = checkNotNull(source)
+            var width by rememberSaveable { mutableStateOf(original.width.toString()) }
+            var height by rememberSaveable { mutableStateOf(original.height.toString()) }
+            var keepRatio by rememberSaveable { mutableStateOf(true) }
+            fun matched(value: String, from: Int, to: Int) = value.toIntOrNull()?.let {
+                (it.toDouble() * to / from).roundToLong().coerceAtLeast(1).toString()
+            }.orEmpty()
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PixelField("宽度（px）", width, enabled, Modifier.weight(1f)) {
+                    width = it
+                    if (keepRatio) height = matched(it, original.width, original.height)
+                }
+                PixelField("高度（px）", height, enabled, Modifier.weight(1f)) {
+                    height = it
+                    if (keepRatio) width = matched(it, original.height, original.width)
+                }
+            }
+            FilterChip(keepRatio, {
+                keepRatio = !keepRatio
+                if (keepRatio) height = matched(width, original.width, original.height)
+            }, enabled = enabled, label = { Text("保持比例") })
+            ImageDetail("每边最多 8192 px，总像素最多 1600 万。")
+            val targetWidth = width.toIntOrNull()
+            val targetHeight = height.toIntOrNull()
+            PrimaryButton(operation.action, {
+                image { ImageTools.resize(resolver, original, checkNotNull(targetWidth), checkNotNull(targetHeight)) }
+            }, enabled = enabled && targetWidth != null && targetHeight != null)
+        }
+        ImageOperation.WATERMARK -> {
+            var text by rememberSaveable { mutableStateOf("") }
+            var position by rememberSaveable { mutableStateOf(WatermarkPosition.BOTTOM) }
+            var opacity by rememberSaveable { mutableIntStateOf(70) }
+            OutlinedTextField(text, { text = it.take(100) }, Modifier.fillMaxWidth(), enabled = enabled,
+                label = { Text("水印文字") }, singleLine = true)
+            Choices(WatermarkPosition.entries, position, enabled, WatermarkPosition::label) { position = it }
+            ImageDetail("不透明度 $opacity%")
+            Slider(opacity.toFloat(), { opacity = it.roundToInt() }, enabled = enabled, valueRange = 10f..100f)
+            PrimaryButton(operation.action, {
+                val value = text.trim()
+                val placement = position
+                val alpha = opacity
+                edit { ImageTools.watermark(it, value, placement, alpha) }
+            }, enabled = enabled && text.isNotBlank())
+        }
+        ImageOperation.STITCH -> {
+            var vertical by rememberSaveable { mutableStateOf(true) }
+            Choices(listOf(true, false), vertical, enabled, { if (it) "纵向" else "横向" }) { vertical = it }
+            ImageDetail("按列表顺序拼接。图片等比缩放至相同${if (vertical) "宽度" else "高度"}。")
+            PrimaryButton(operation.action, {
+                val direction = vertical
+                image { ImageTools.stitch(resolver, sources, direction) }
+            }, enabled = enabled && sources.size >= 2)
+        }
+        ImageOperation.COMPRESS, ImageOperation.CONVERT -> {
+            val compress = operation == ImageOperation.COMPRESS
+            val original = checkNotNull(source)
+            val formats = if (compress) listOf(ImageFormat.JPEG, ImageFormat.WEBP) else ImageFormat.entries
+            var format by rememberSaveable { mutableStateOf(if (compress) ImageFormat.JPEG else ImageFormat.PNG) }
+            var quality by rememberSaveable { mutableIntStateOf(75) }
+            Choices(formats, format, enabled, ImageFormat::label) { format = it }
+            if (compress) {
+                ImageDetail("画质 $quality%")
+                Slider(quality.toFloat(), { quality = it.roundToInt() }, enabled = enabled, valueRange = 1f..100f)
+            }
+            if (format == ImageFormat.JPEG) ImageDetail("JPEG 会将透明背景填为白色。")
+            ImageDetail("导出会重新编码图片。超大图请先调整尺寸。")
+            PrimaryButton(operation.action, {
+                image(format, if (compress) quality else 90) { ImageTools.edit(resolver, original) { it } }
+            }, enabled)
+        }
+        ImageOperation.BASE64 -> {
+            var dataUrl by rememberSaveable { mutableStateOf(true) }
+            FilterChip(dataUrl, { dataUrl = !dataUrl }, enabled = enabled, label = { Text("添加 Data URL 前缀") })
+            ImageDetail("编码原始文件字节。最大 32 MiB，结果可保存为文本。")
+            PrimaryButton(operation.action, {
+                val includePrefix = dataUrl
+                run(null) { ImageTools.writeBase64(resolver, checkNotNull(source), includePrefix, it) }
+            }, enabled)
+        }
+        ImageOperation.QR -> {
+            var embed by rememberSaveable { mutableStateOf(false) }
+            var url by rememberSaveable { mutableStateOf("") }
+            Choices(listOf(false, true), embed, enabled, { if (it) "嵌入小图片" else "图片网址" }) { embed = it }
+            if (embed) {
+                ImageDetail("把最多 2000 字节的原图嵌入二维码。扫码器需支持读取 Data URL。")
+            } else {
+                OutlinedTextField(url, { url = it.take(3000) }, Modifier.fillMaxWidth(), enabled = enabled,
+                    label = { Text("图片网址") }, placeholder = { Text("https://…") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                ImageDetail("二维码记录你提供的网址。应用无需上传图片。")
+            }
+            PrimaryButton(operation.action, {
+                val useImage = embed
+                val address = url
+                image { if (useImage) ImageTools.imageQr(resolver, checkNotNull(source)) else ImageTools.urlQr(address) }
+            }, enabled = enabled && (if (embed) source != null else url.isNotBlank()))
+        }
+        else -> Unit
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun <T> Choices(options: List<T>, selected: T, enabled: Boolean, label: (T) -> String, choose: (T) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { option ->
+            FilterChip(option == selected, { choose(option) }, enabled = enabled, label = { Text(label(option)) })
+        }
+    }
+}
+
+@Composable
+private fun PixelField(label: String, value: String, enabled: Boolean, modifier: Modifier, edit: (String) -> Unit) {
+    OutlinedTextField(value, { input -> edit(input.filter { it in '0'..'9' }.take(10)) }, modifier, enabled = enabled,
+        label = { Text(label) }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+}

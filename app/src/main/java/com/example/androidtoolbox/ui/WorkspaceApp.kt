@@ -46,6 +46,7 @@ private val catalog = listOf(
     Tool("TIME", "时间戳", "日期与秒 / 毫秒互转", "开发", Icons.Outlined.Schedule),
     Tool("PASSWORD", "密码生成", "安全随机 · 自定义字符", "安全", Icons.Outlined.Key),
     Tool("QR", "二维码 / 条形码", "生成 · 扫码 · 离线图片解析", "效率", Icons.Outlined.QrCode2),
+    Tool("IMAGE", "图片处理工具", "裁剪 · 旋转 · 压缩 · 尺寸 · 格式 · 水印 · 拼接 · 取色 · EXIF · Base64 · 二维码 · DPI", "效率", Icons.Outlined.Image),
     Tool("CRYPTO", "加解密", "AES · RSA · 摘要", "安全", Icons.Outlined.Lock),
     Tool("OTP", "身份验证器", "动态 2FA 验证码", "安全", Icons.Outlined.Security),
 )
@@ -90,6 +91,7 @@ fun ToolboxApp(
                     "NOTES" -> NotesPage(local.notes, busy, actions, onCopy, back)
                     "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, back)
                     "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, back)
+                    "IMAGE" -> ImageToolsPage(onCopy, back)
                     "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, back)
                     "OTP" -> OtpPage(accounts, otpStoreError, busy || storageError != null, onScanOtp, onAddOtp,
                         onDeleteOtp, onCopy, onImageOtp, onImportOtpText, onSaveQr, onShareQr,
