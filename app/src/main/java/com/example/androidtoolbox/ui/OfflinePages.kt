@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -73,12 +75,25 @@ internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActi
             item { Spacer(Modifier.height(20.dp)) }
         }
     }
-    if (editingId != null) AlertDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text("编辑便签") },
+    if (editingId != null) AlertDialog(onDismissRequest = { if (!busy) dismiss() }, title = {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("编辑便签", modifier = Modifier.weight(1f))
+            Row(
+                modifier = Modifier.heightIn(min = 48.dp)
+                    .toggleable(value = pinned, role = Role.Checkbox, onValueChange = { pinned = it })
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Checkbox(pinned, onCheckedChange = null)
+                Text("置顶便签", fontSize = 13.sp, fontWeight = FontWeight.Normal)
+            }
+        }
+    },
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(title, { if (it.length <= 200) title = it }, Modifier.fillMaxWidth(), label = { Text("标题（最多 200 字）") }, singleLine = true)
             OutlinedTextField(body, { if (it.length <= 100_000) body = it }, Modifier.fillMaxWidth().heightIn(max = 280.dp), label = { Text("正文") }, minLines = 5, maxLines = 10)
             NoteCopyButton(body, onCopy)
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(pinned, { pinned = it }); Text("置顶便签") }
             if (notes.any { it.id == editingId }) TextButton(onClick = { deleting = notes.find { it.id == editingId } }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, null); Text("删除便签") }
         } },
         confirmButton = { TextButton(onClick = {
