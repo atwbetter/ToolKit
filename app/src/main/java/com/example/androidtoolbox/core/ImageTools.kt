@@ -20,7 +20,6 @@ import java.io.File
 import java.io.OutputStream
 import java.net.URI
 import kotlin.math.ceil
-import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -36,8 +35,6 @@ internal enum class ImageFormat(val label: String, val extension: String, val mi
         WEBP -> if (Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.WEBP
     }
 }
-
-internal enum class WatermarkPosition(val label: String) { TOP("左上"), CENTER("居中"), BOTTOM("右下") }
 
 internal object ImageTools {
     const val MAX_EDGE = 8192
@@ -84,26 +81,18 @@ internal object ImageTools {
         }
     }
 
-    fun watermark(bitmap: Bitmap, text: String, position: WatermarkPosition, opacity: Int): Bitmap {
-        require(text.isNotBlank() && text.length <= 100) { "请输入 1–100 个字的水印文字" }
-        require(opacity in 10..100) { "水印不透明度须在 10%–100%" }
+    fun watermark(bitmap: Bitmap, style: WatermarkStyle): Bitmap {
+        require(style.text.isNotBlank() && style.text.length <= WatermarkStyle.MAX_TEXT) { "请输入 1–100 个字的水印文字" }
+        require(style.angle in WatermarkStyle.ANGLES && style.size in WatermarkStyle.SIZES &&
+            style.opacity in WatermarkStyle.OPACITIES && style.spacing in WatermarkStyle.SPACINGS) { "水印参数超出范围" }
         val output = bitmap.copy(Bitmap.Config.ARGB_8888, true) ?: error("无法创建水印图片")
-        val inset = min(bitmap.width, bitmap.height) * 0.05f
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            alpha = (255 * opacity / 100)
-            textSize = min(bitmap.width, bitmap.height) * 0.09f
-            textScaleX = min(1f, (bitmap.width - 2 * inset) / measureText(text).coerceAtLeast(1f))
-            setShadowLayer(textSize / 10, 0f, textSize / 18, Color.argb(alpha, 0, 0, 0))
+        try {
+            ImageWatermark.draw(Canvas(output), output.width, output.height, style)
+            return output
+        } catch (failure: Throwable) {
+            output.recycle()
+            throw failure
         }
-        val width = paint.measureText(text)
-        val (x, y) = when (position) {
-            WatermarkPosition.TOP -> inset to inset - paint.ascent()
-            WatermarkPosition.CENTER -> (bitmap.width - width) / 2 to (bitmap.height - paint.ascent() - paint.descent()) / 2
-            WatermarkPosition.BOTTOM -> bitmap.width - width - inset to bitmap.height - inset - paint.descent()
-        }
-        Canvas(output).drawText(text, x, y, paint)
-        return output
     }
 
     fun stitch(resolver: ContentResolver, sources: List<ImageSource>, vertical: Boolean): Bitmap {

@@ -72,7 +72,7 @@ class ImageToolsTest {
 
     @Test fun exportKeepsPngTransparencyAndUsesWhiteForJpeg() {
         val bitmap = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
-        val marked = ImageTools.watermark(bitmap, "Toolbox", WatermarkPosition.CENTER, 80)
+        val marked = ImageTools.watermark(bitmap, WatermarkStyle(text = "Toolbox", position = WatermarkPosition.CENTER, size = 24, opacity = 80))
         try {
             assertTrue(ImageTools.palette(bitmap).isEmpty())
             assertTrue(ImageTools.palette(marked).isNotEmpty())
@@ -85,6 +85,40 @@ class ImageToolsTest {
                 } finally { decoded.recycle() }
             }
         } finally { bitmap.recycle(); marked.recycle() }
+    }
+
+    @Test fun angledTiledWatermarkReachesEveryQuarterAndPreservesSource() {
+        val width = 400
+        val height = 260
+        val source = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val style = WatermarkStyle(text = "仅供测试", angle = -30, color = WatermarkColor.RED,
+            opacity = 60, size = 12, spacing = 8)
+        val single = ImageTools.watermark(source, style)
+        val tiled = ImageTools.watermark(source, style.copy(mode = WatermarkMode.TILED))
+        fun marks(bitmap: Bitmap): List<Int> {
+            val counts = MutableList(4) { 0 }
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            pixels.forEachIndexed { index, pixel ->
+                if (Color.alpha(pixel) > 80 && Color.red(pixel) > 2 * Color.blue(pixel)) {
+                    val quadrant = (if (index / width < height / 2) 0 else 2) + (if (index % width < width / 2) 0 else 1)
+                    counts[quadrant]++
+                }
+            }
+            return counts
+        }
+        try {
+            assertEquals(width to height, tiled.width to tiled.height)
+            assertTrue(marks(source).all { it == 0 })
+            val singleCounts = marks(single)
+            assertTrue(singleCounts.take(3).all { it == 0 })
+            assertTrue(singleCounts.last() > 0)
+            assertTrue(marks(tiled).all { it > 0 })
+        } finally {
+            source.recycle()
+            single.recycle()
+            tiled.recycle()
+        }
     }
 
     @Test fun pngDensityAndOriginalFileBase64AndQrRoundTrip() {

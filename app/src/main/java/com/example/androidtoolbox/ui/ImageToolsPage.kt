@@ -29,14 +29,21 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.get
+import androidx.core.graphics.withSave
 import androidx.core.net.toUri
 import com.example.androidtoolbox.core.*
 import kotlinx.coroutines.CancellationException
@@ -73,6 +80,7 @@ private val selectedImagesSaver = listSaver<List<String>, String>(save = { it },
 @Composable
 internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val context = LocalContext.current
+    val focus = LocalFocusManager.current
     val resolver = context.contentResolver
     val cache = remember(context) { File(context.cacheDir, "image-tools") }
     val scope = rememberCoroutineScope()
@@ -82,10 +90,13 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     var multiple by rememberSaveable(stateSaver = selectedImagesSaver) { mutableStateOf(emptyList()) }
     var resultName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSave by rememberSaveable { mutableStateOf<String?>(null) }
+    var watermark by rememberSaveable { mutableStateOf(WatermarkStyle()) }
+    var showingWatermarkPreview by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val stitch = operation == ImageOperation.STITCH
+    val watermarkPreview = watermark.takeIf { operation == ImageOperation.WATERMARK && it.text.isNotBlank() }
     val selected = if (stitch) multiple else listOfNotNull(single)
 
     fun setOperation(next: ImageOperation) {
@@ -205,7 +216,12 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         item {
             ImagePanel {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (stitch) "原图列表" else "原图", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    val title = when {
+                        stitch -> "原图列表"
+                        watermarkPreview != null -> "水印实时预览"
+                        else -> "原图"
+                    }
+                    Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     TextButton(enabled = !working, onClick = {
                         if (stitch) openMultiple.launch(arrayOf("image/*")) else open.launch(arrayOf("image/*"))
                     }) {
@@ -215,9 +231,12 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 when {
                     images != null -> {
                         val selection = crop.takeIf { operation == ImageOperation.CROP }
-                        SourcePreview(images.preview, selection, if (!working && selection != null) {
-                            { fields -> crop = fields }
-                        } else null, if (operation == ImageOperation.COLOR) ({ color -> pickedColor = color }) else null)
+                        SourcePreview(
+                            images.preview, selection,
+                            selectCrop = if (!working && selection != null) ({ fields -> crop = fields }) else null,
+                            pickColor = if (operation == ImageOperation.COLOR) ({ color -> pickedColor = color }) else null,
+                            watermark = watermarkPreview,
+                        )
                         val first = images.preview.source
                         val size = first.bytes?.let { " · " + Formatter.formatFileSize(context, it) }.orEmpty()
                         ImageDetail("${first.name} · ${first.width} × ${first.height} px$size")
@@ -247,7 +266,22 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                     InspectImage(operation, images, pickedColor, copy)
                 } else {
                     key(operation, source?.uri) {
-                        ImageOperationControls(operation, images?.sources.orEmpty(), crop, { crop = it }, working, ::run)
+                        ImageOperationControls(
+                            operation, images?.sources.orEmpty(), crop, { crop = it }, watermark,
+                            updateWatermark = {
+                                if (watermark != it) {
+                                    watermark = it
+                                    resultName = null
+                                    notice = null
+                                    error = null
+                                }
+                            },
+                            showWatermarkPreview = {
+                                focus.clearFocus()
+                                showingWatermarkPreview = true
+                            },
+                            working = working, run = ::run,
+                        )
                     }
                 }
                 if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -283,6 +317,16 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         }
         notice?.let { message -> item { Text(message, color = Indigo, modifier = Modifier.padding(horizontal = 22.dp)) } }
         item { Spacer(Modifier.height(12.dp)) }
+    }
+    if (showingWatermarkPreview && watermarkPreview != null && images != null) {
+        val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
+        val height = minOf(420.dp, windowHeight * .6f)
+        AlertDialog(
+            onDismissRequest = { showingWatermarkPreview = false },
+            title = { Text("水印整图预览") },
+            text = { SourcePreview(images.preview, watermark = watermarkPreview, previewHeight = height) },
+            confirmButton = { TextButton({ showingWatermarkPreview = false }) { Text("完成") } },
+        )
     }
 }
 
@@ -417,6 +461,8 @@ private fun SourcePreview(
     crop: CropFields? = null,
     selectCrop: ((CropFields) -> Unit)? = null,
     pickColor: ((Int) -> Unit)? = null,
+    watermark: WatermarkStyle? = null,
+    previewHeight: Dp = 212.dp,
 ) {
     val (source, bitmap) = preview
     val bitmapImage = remember(bitmap) { bitmap.asImageBitmap() }
@@ -456,10 +502,26 @@ private fun SourcePreview(
         }
         else -> Modifier
     }
-    Image(bitmapImage, if (crop == null) "图片预览" else "原图与裁剪框",
-        Modifier.fillMaxWidth().height(212.dp).clip(RoundedCornerShape(10.dp)).background(Pale)
+    val description = when {
+        watermark != null -> "水印效果预览"
+        crop != null -> "原图与裁剪框"
+        else -> "图片预览"
+    }
+    Image(bitmapImage, description,
+        Modifier.fillMaxWidth().height(previewHeight).clip(RoundedCornerShape(10.dp)).background(Pale)
             .then(gestures).drawWithContent {
                 drawContent()
+                if (watermark != null) {
+                    val area = fittedImage(size.width, size.height, bitmap)
+                    drawIntoCanvas { canvas ->
+                        canvas.nativeCanvas.withSave {
+                            clipRect(area.left, area.top, area.right, area.bottom)
+                            translate(area.left, area.top)
+                            scale(area.width / source.width, area.height / source.height)
+                            ImageWatermark.draw(this, source.width, source.height, watermark)
+                        }
+                    }
+                }
                 val bounds = crop?.rectangle() ?: return@drawWithContent
                 if (bounds.left < 0 || bounds.top < 0 || bounds.right > source.width || bounds.bottom > source.height || bounds.isEmpty) return@drawWithContent
                 val area = fittedImage(size.width, size.height, bitmap)
