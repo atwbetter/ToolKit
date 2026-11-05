@@ -55,17 +55,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.DataInputStream
 import java.io.File
+import java.io.Serializable
 import java.util.Locale
+import java.util.zip.ZipFile
 import kotlin.math.roundToInt
 
 internal enum class ImageGroup(val label: String) { EDIT("编辑"), EXPORT("导出"), INSPECT("查看") }
 
 internal enum class ImageOperation(val label: String, val group: ImageGroup, val action: String = "生成结果") {
+    BORDER("图片添加边框", ImageGroup.EDIT, "预览"),
     CROP("裁剪", ImageGroup.EDIT, "裁剪图片"),
     ROTATE("旋转 / 翻转", ImageGroup.EDIT),
     RESIZE("尺寸调整", ImageGroup.EDIT, "调整尺寸"),
     WATERMARK("文字水印", ImageGroup.EDIT, "添加水印"),
-    BORDER("图片添加边框", ImageGroup.EDIT, "预览"),
     STITCH("图片拼接", ImageGroup.EDIT, "拼接图片"),
     COMPRESS("压缩", ImageGroup.EXPORT, "压缩图片"),
     CONVERT("格式转换", ImageGroup.EXPORT, "转换格式"),
@@ -89,12 +91,14 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val cache = remember(context) { File(context.cacheDir, "image-tools") }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    var operation by rememberSaveable { mutableStateOf(ImageOperation.CROP) }
+    var operation by rememberSaveable { mutableStateOf(ImageOperation.BORDER) }
     var single by rememberSaveable { mutableStateOf<String?>(null) }
+    var customCrop by rememberSaveable(single) { mutableStateOf<CropFields?>(null) }
     var multiple by rememberSaveable(stateSaver = selectedImagesSaver) { mutableStateOf(emptyList()) }
     var resultName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSave by rememberSaveable { mutableStateOf<String?>(null) }
     var watermark by rememberSaveable { mutableStateOf(WatermarkStyle()) }
+    var cropMode by rememberSaveable { mutableStateOf(CropMode()) }
     var border by rememberSaveable { mutableStateOf(BorderStyle()) }
     var showingBorderPreview by rememberSaveable { mutableStateOf(false) }
     var showingWatermarkPreview by remember { mutableStateOf(false) }
@@ -105,12 +109,16 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val watermarkPreview = watermark.takeIf { operation == ImageOperation.WATERMARK && it.text.isNotBlank() }
     val selected = if (stitch) multiple else listOfNotNull(single)
 
-    fun setOperation(next: ImageOperation) {
-        if (next == operation) return
-        operation = next
+    fun clearResult() {
         resultName = null
         notice = null
         error = null
+    }
+
+    fun setOperation(next: ImageOperation) {
+        if (next == operation) return
+        operation = next
+        clearResult()
     }
 
     fun work(action: suspend () -> Unit) {
@@ -130,9 +138,9 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             single = uri.toString()
-            resultName = null
-            error = null
-            notice = null
+            customCrop = null
+            cropMode = cropMode.copy(tile = null)
+            clearResult()
         }
     }
     val openMultiple = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -189,14 +197,21 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     }
     val images = load?.getOrNull()
     val source = images?.preview?.source
-    var crop by remember(source?.uri) { mutableStateOf(source?.let(CropFields::full)) }
+    val crop = source?.let { customCrop ?: CropFields.full(it) }
     var pickedColor by remember(source?.uri) { mutableStateOf<Int?>(null) }
 
-    fun run(format: ImageFormat?, encode: (File) -> Unit) = work {
+    fun updateCrop(fields: CropFields) {
+        if (fields != customCrop) {
+            customCrop = fields
+            clearResult()
+        }
+    }
+
+    fun run(extension: String, encode: (File) -> Unit) = work {
         resultName = null
         resultName = withContext(Dispatchers.IO) {
             check(cache.isDirectory || cache.mkdirs()) { "无法创建临时目录" }
-            val file = File.createTempFile("toolbox-image-", ".${format?.extension ?: "txt"}", cache)
+            val file = File.createTempFile("toolbox-image-", ".$extension", cache)
             var complete = false
             try {
                 encode(file)
@@ -253,7 +268,8 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                         } else {
                             SourcePreview(
                                 images.preview, selection,
-                                selectCrop = if (!working && selection != null) ({ fields -> crop = fields }) else null,
+                                selectCrop = if (!working && selection != null) ::updateCrop else null,
+                                cropMode = cropMode,
                                 pickColor = if (operation == ImageOperation.COLOR) ({ color -> pickedColor = color }) else null,
                                 watermark = watermarkPreview,
                             )
@@ -288,7 +304,14 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 } else {
                     key(operation, source?.uri) {
                         ImageOperationControls(
-                            operation, images?.sources.orEmpty(), crop, { crop = it }, watermark,
+                            operation, images?.sources.orEmpty(), crop, ::updateCrop, cropMode,
+                            updateCropMode = {
+                                if (cropMode != it) {
+                                    cropMode = it
+                                    clearResult()
+                                }
+                            },
+                            watermark = watermark,
                             updateWatermark = {
                                 if (watermark != it) {
                                     watermark = it
@@ -325,10 +348,9 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                         save = { mime -> saveResult(name, mime) },
                         reuse = {
                             single = Uri.fromFile(File(cache, name)).toString()
+                            cropMode = CropMode()
                             setOperation(ImageOperation.CROP)
-                            resultName = null
-                            error = null
-                            notice = null
+                            clearResult()
                         },
                         copyText = { file -> work {
                             val value = withContext(Dispatchers.IO) { file.readText() }
@@ -413,16 +435,18 @@ private fun ImageResultPanel(
     copyText: (File) -> Unit,
 ) {
     val context = LocalContext.current
-    val text = file.extension == "txt"
     val result by produceState<Result<Any>?>(null, file) {
         value = imageLoad {
             check(file.isFile) { "临时结果已失效，请重新生成" }
-            if (text) {
-                val prefix = ByteArray(minOf(144L, file.length()).toInt())
-                DataInputStream(file.inputStream()).use { it.readFully(prefix) }
-                String(prefix, Charsets.US_ASCII)
+            when (file.extension) {
+                "txt" -> {
+                    val prefix = ByteArray(minOf(144L, file.length()).toInt())
+                    DataInputStream(file.inputStream()).use { it.readFully(prefix) }
+                    String(prefix, Charsets.US_ASCII)
+                }
+                "zip" -> ZipFile(file).use { it.size() }
+                else -> context.contentResolver.readPreview(file)
             }
-            else context.contentResolver.readPreview(file)
         }
     }
     ImagePanel {
@@ -453,6 +477,11 @@ private fun ImageResultPanel(
                     if (length <= 256 * 1024) TextButton({ copyText(file) }, enabled = !working) { Text("复制 Base64") }
                     else ImageDetail("长文本请保存为文件")
                 }
+            }
+            is Int -> {
+                ImageDetail("${loaded} 张 PNG · ${Formatter.formatFileSize(context, file.length())}")
+                ImageDetail("ZIP 内的图片按从左到右、从上到下的顺序编号。")
+                Button({ save("application/zip") }, enabled = !working) { Text("保存全部（ZIP）") }
             }
             else -> if (result == null) LinearProgressIndicator(Modifier.fillMaxWidth())
                 else Text(result?.exceptionOrNull()?.message ?: "无法读取处理结果", color = MaterialTheme.colorScheme.error)
@@ -503,14 +532,14 @@ private fun ColorButton(pixel: Int, label: String, copy: (String, String) -> Uni
     }
 }
 
-internal data class CropFields(val x: String, val y: String, val width: String, val height: String) {
-    fun rectangle(): android.graphics.Rect? {
+internal data class CropFields(val x: String, val y: String, val width: String, val height: String) : Serializable {
+    fun region(source: ImageSource): CropRegion? {
         val x = x.toIntOrNull() ?: return null
         val y = y.toIntOrNull() ?: return null
         val w = width.toIntOrNull() ?: return null
         val h = height.toIntOrNull() ?: return null
-        if (w <= 0 || h <= 0 || x.toLong() + w > Int.MAX_VALUE || y.toLong() + h > Int.MAX_VALUE) return null
-        return android.graphics.Rect(x, y, x + w, y + h)
+        if (x < 0 || y < 0 || w <= 0 || h <= 0 || x.toLong() + w > source.width || y.toLong() + h > source.height) return null
+        return CropRegion(x, y, x + w, y + h)
     }
 
     companion object {
@@ -523,6 +552,7 @@ private fun SourcePreview(
     preview: ImagePreview,
     crop: CropFields? = null,
     selectCrop: ((CropFields) -> Unit)? = null,
+    cropMode: CropMode = CropMode(),
     pickColor: ((Int) -> Unit)? = null,
     watermark: WatermarkStyle? = null,
     previewHeight: Dp = 212.dp,
@@ -567,7 +597,7 @@ private fun SourcePreview(
     }
     val description = when {
         watermark != null -> "水印效果预览"
-        crop != null -> "原图与裁剪框"
+        crop != null -> "原图与${cropMode.grid.label}裁剪框"
         else -> "图片预览"
     }
     Image(bitmapImage, description,
@@ -585,25 +615,50 @@ private fun SourcePreview(
                         }
                     }
                 }
-                val bounds = crop?.rectangle() ?: return@drawWithContent
-                if (bounds.left < 0 || bounds.top < 0 || bounds.right > source.width || bounds.bottom > source.height || bounds.isEmpty) return@drawWithContent
+                val bounds = crop?.region(source) ?: return@drawWithContent
                 val area = fittedImage(size.width, size.height, bitmap)
-                val left = area.left + area.width * bounds.left / source.width
-                val top = area.top + area.height * bounds.top / source.height
-                val right = area.left + area.width * bounds.right / source.width
-                val bottom = area.top + area.height * bounds.bottom / source.height
+                fun x(pixel: Int) = area.left + area.width * pixel / source.width
+                fun y(pixel: Int) = area.top + area.height * pixel / source.height
+                val left = x(bounds.left)
+                val top = y(bounds.top)
+                val right = x(bounds.right)
+                val bottom = y(bounds.bottom)
                 val shade = Color.Black.copy(alpha = .46f)
                 drawRect(shade, area.topLeft, Size(area.width, top - area.top))
                 drawRect(shade, Offset(area.left, bottom), Size(area.width, area.bottom - bottom))
                 drawRect(shade, Offset(area.left, top), Size(left - area.left, bottom - top))
                 drawRect(shade, Offset(right, top), Size(area.right - right, bottom - top))
                 drawRect(Color.White, Offset(left, top), Size(right - left, bottom - top), style = Stroke(2.dp.toPx()))
-                for (step in 1..2) {
-                    val x = left + (right - left) * step / 3
-                    val y = top + (bottom - top) * step / 3
-                    val guide = Color.White.copy(alpha = .65f)
-                    drawLine(guide, Offset(x, top), Offset(x, bottom))
-                    drawLine(guide, Offset(left, y), Offset(right, y))
+                val guide = Color.White.copy(alpha = .75f)
+                fun gridGuide(start: Offset, end: Offset) {
+                    drawLine(shade, start, end, 3.dp.toPx())
+                    drawLine(guide, start, end, 1.dp.toPx())
+                }
+                val grid = cropMode.grid
+                if (grid == CropGrid.FREE) {
+                    for (step in 1..2) {
+                        val gx = left + (right - left) * step / 3
+                        val gy = top + (bottom - top) * step / 3
+                        gridGuide(Offset(gx, top), Offset(gx, bottom))
+                        gridGuide(Offset(left, gy), Offset(right, gy))
+                    }
+                } else {
+                    val tiles = grid.split(bounds)
+                    if (tiles.isEmpty()) return@drawWithContent
+                    for (column in 1 until grid.columns) {
+                        val gx = x(tiles[column].left)
+                        gridGuide(Offset(gx, top), Offset(gx, bottom))
+                    }
+                    for (row in 1 until grid.rows) {
+                        val gy = y(tiles[row * grid.columns].top)
+                        gridGuide(Offset(left, gy), Offset(right, gy))
+                    }
+                    cropMode.tile?.let(tiles::getOrNull)?.let { tile ->
+                        val corner = Offset(x(tile.left), y(tile.top))
+                        val cellSize = Size(x(tile.right) - corner.x, y(tile.bottom) - corner.y)
+                        drawRect(Indigo.copy(alpha = .22f), corner, cellSize)
+                        drawRect(Indigo, corner, cellSize, style = Stroke(2.dp.toPx()))
+                    }
                 }
             }, contentScale = ContentScale.Fit)
 }

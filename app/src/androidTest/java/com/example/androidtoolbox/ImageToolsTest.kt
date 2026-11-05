@@ -15,12 +15,44 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.util.Base64
+import java.util.Collections
 import java.util.zip.CRC32
+import java.util.zip.ZipFile
 
 @RunWith(AndroidJUnit4::class)
 class ImageToolsTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val resolver get() = context.contentResolver
+
+    @Test fun nineGridZipContainsTheExactPixelsInReadingOrder() {
+        val original = Bitmap.createBitmap(11, 8, Bitmap.Config.ARGB_8888)
+        try {
+            for (y in 0 until original.height) for (x in 0 until original.width) {
+                original.setPixel(x, y, Color.rgb(x * 21, y * 27, 90))
+            }
+            withFile(".png") { file ->
+                file.outputStream().use { ImageTools.write(original, ImageFormat.PNG, 100, it) }
+                val source = resolver.readImageSource(Uri.fromFile(file))
+                val cells = CropGrid.NINE.split(CropRegion(1, 1, 11, 8))
+                withFile(".zip") { archive ->
+                    ImageTools.writeCropGrid(resolver, source, cells, archive)
+                    ZipFile(archive).use { zip ->
+                        val entries = Collections.list(zip.entries())
+                        assertEquals((1..9).map { "tile-0$it.png" }, entries.map { it.name })
+                        entries.zip(cells).forEach { (entry, cell) ->
+                            val tile = zip.getInputStream(entry).use { BitmapFactory.decodeStream(it) }
+                            try {
+                                assertEquals(cell.width to cell.height, tile.width to tile.height)
+                                for (y in 0 until cell.height) for (x in 0 until cell.width) {
+                                    assertEquals(original.getPixel(cell.left + x, cell.top + y), tile.getPixel(x, y))
+                                }
+                            } finally { tile.recycle() }
+                        }
+                    }
+                }
+            }
+        } finally { original.recycle() }
+    }
 
     @Test fun blurredFrameKeepsPhotoPixelsAndSoftensTheBorder() {
         val original = Bitmap.createBitmap(100, 60, Bitmap.Config.ARGB_8888)

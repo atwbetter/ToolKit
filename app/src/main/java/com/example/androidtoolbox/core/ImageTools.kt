@@ -19,6 +19,9 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.File
 import java.io.OutputStream
 import java.net.URI
+import java.util.zip.Deflater
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -53,8 +56,7 @@ internal object ImageTools {
         decode(resolver, source, sampleFor(source, 1280, 1_200_000))
 
     fun edit(resolver: ContentResolver, source: ImageSource, operation: (Bitmap) -> Bitmap): Bitmap {
-        validateSize(source.width, source.height)
-        return transform(decode(resolver, source, 1), operation)
+        return transform(decodeForEdit(resolver, source), operation)
     }
 
     fun crop(bitmap: Bitmap, x: Int, y: Int, width: Int, height: Int): Bitmap {
@@ -63,6 +65,23 @@ internal object ImageTools {
             "请输入位于原图范围内的裁剪坐标和尺寸"
         }
         return Bitmap.createBitmap(bitmap, x, y, width, height)
+    }
+
+    fun writeCropGrid(resolver: ContentResolver, source: ImageSource, tiles: List<CropRegion>, file: File) {
+        require(tiles.size > 1 && tiles.all { it.fits(source.width, source.height) }) { "裁剪选区无效" }
+        val bitmap = decodeForEdit(resolver, source)
+        try {
+            ZipOutputStream(file.outputStream().buffered()).use { archive ->
+                archive.setLevel(Deflater.NO_COMPRESSION)
+                tiles.forEachIndexed { index, tile ->
+                    archive.putNextEntry(ZipEntry("tile-${(index + 1).toString().padStart(2, '0')}.png"))
+                    val image = crop(bitmap, tile.left, tile.top, tile.width, tile.height)
+                    try { write(image, ImageFormat.PNG, 100, archive) }
+                    finally { if (image !== bitmap) image.recycle() }
+                    archive.closeEntry()
+                }
+            }
+        } finally { bitmap.recycle() }
     }
 
     fun orient(bitmap: Bitmap, degrees: Int, horizontal: Boolean, vertical: Boolean): Bitmap {
@@ -228,6 +247,11 @@ internal object ImageTools {
         var sample = 1
         while (source.width / (2 * sample) >= width && source.height / (2 * sample) >= height) sample *= 2
         return maxOf(sample, sampleFor(source, MAX_EDGE, pixelLimit))
+    }
+
+    private fun decodeForEdit(resolver: ContentResolver, source: ImageSource): Bitmap {
+        validateSize(source.width, source.height)
+        return decode(resolver, source, 1)
     }
 
     private fun decode(resolver: ContentResolver, source: ImageSource, sample: Int): Bitmap {

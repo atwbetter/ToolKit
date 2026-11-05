@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.dp
 import com.example.androidtoolbox.core.BorderAlignment
 import com.example.androidtoolbox.core.BorderPreset
 import com.example.androidtoolbox.core.BorderStyle
+import com.example.androidtoolbox.core.CropGrid
+import com.example.androidtoolbox.core.CropMode
 import com.example.androidtoolbox.core.ImageBorder
 import com.example.androidtoolbox.core.ImageFormat
 import com.example.androidtoolbox.core.ImageSource
@@ -45,19 +47,21 @@ internal fun ImageOperationControls(
     sources: List<ImageSource>,
     crop: CropFields?,
     updateCrop: (CropFields) -> Unit,
+    cropMode: CropMode,
+    updateCropMode: (CropMode) -> Unit,
     watermark: WatermarkStyle,
     updateWatermark: (WatermarkStyle) -> Unit,
     showWatermarkPreview: () -> Unit,
     border: BorderStyle,
     updateBorder: (BorderStyle) -> Unit,
     working: Boolean,
-    run: (ImageFormat?, (File) -> Unit) -> Unit,
+    run: (String, (File) -> Unit) -> Unit,
 ) {
     val resolver = LocalContext.current.contentResolver
     val source = sources.firstOrNull()
     val enabled = !working
     fun image(format: ImageFormat = ImageFormat.PNG, quality: Int = 100, create: () -> Bitmap) {
-        run(format) { file ->
+        run(format.extension) { file ->
             val bitmap = create()
             try { file.outputStream().use { ImageTools.write(bitmap, format, quality, it) } }
             finally { bitmap.recycle() }
@@ -75,6 +79,11 @@ internal fun ImageOperationControls(
     when (operation) {
         ImageOperation.CROP -> {
             val fields = crop ?: return
+            val original = checkNotNull(source)
+            val grid = cropMode.grid
+            Choices(CropGrid.entries, grid, enabled, CropGrid::label) {
+                if (grid != it) updateCropMode(CropMode(it))
+            }
             ImageDetail("在原图上拖出裁剪框，或输入像素坐标。")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PixelField("左上 X", fields.x, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(x = it)) }
@@ -84,12 +93,30 @@ internal fun ImageOperationControls(
                 PixelField("宽度", fields.width, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(width = it)) }
                 PixelField("高度", fields.height, enabled, Modifier.weight(1f)) { updateCrop(fields.copy(height = it)) }
             }
-            TextButton({ updateCrop(CropFields.full(checkNotNull(source))) }, enabled = enabled) { Text("重置裁剪框") }
-            val bounds = fields.rectangle()
-            PrimaryButton(operation.action, {
-                checkNotNull(bounds)
-                edit { ImageTools.crop(it, bounds.left, bounds.top, bounds.width(), bounds.height()) }
-            }, enabled = enabled && bounds != null && !bounds.isEmpty)
+            TextButton({ updateCrop(CropFields.full(original)) }, enabled = enabled) { Text("重置裁剪框") }
+            val region = fields.region(original)
+            val tiles = region?.let(grid::split).orEmpty()
+            val singleTile = if (grid == CropGrid.FREE) region else cropMode.tile?.let(tiles::getOrNull)
+            if (grid != CropGrid.FREE) {
+                ImageDetail("从左到右、从上到下编号。可裁剪单格，或将全部 PNG 打包为 ZIP。")
+                Choices((0..grid.tileCount).toList(), cropMode.tile?.plus(1) ?: 0, enabled,
+                    { if (it == 0) "全部" else "第 $it 格" }) {
+                    updateCropMode(cropMode.copy(tile = it.takeIf { number -> number > 0 }?.minus(1)))
+                }
+            }
+            when {
+                region == null -> ImageDetail("请设置位于原图范围内的有效选区。")
+                tiles.isEmpty() -> ImageDetail("选区太小，请扩大裁剪范围。")
+                singleTile != null -> ImageDetail("输出尺寸 ${singleTile.width} × ${singleTile.height} px · PNG")
+                else -> ImageDetail("输出 ${tiles.size} 张 PNG · ZIP")
+            }
+            PrimaryButton(if (grid == CropGrid.FREE || singleTile != null) operation.action else "切分图片", {
+                if (singleTile != null) {
+                    edit { ImageTools.crop(it, singleTile.left, singleTile.top, singleTile.width, singleTile.height) }
+                } else {
+                    run("zip") { file -> ImageTools.writeCropGrid(resolver, original, tiles, file) }
+                }
+            }, enabled = enabled && tiles.isNotEmpty())
         }
         ImageOperation.ROTATE -> {
             var degrees by rememberSaveable { mutableIntStateOf(0) }
@@ -185,7 +212,7 @@ internal fun ImageOperationControls(
             ImageDetail("编码原始文件字节。最大 32 MiB，结果可保存为文本。")
             PrimaryButton(operation.action, {
                 val includePrefix = dataUrl
-                run(null) { ImageTools.writeBase64(resolver, checkNotNull(source), includePrefix, it) }
+                run("txt") { ImageTools.writeBase64(resolver, checkNotNull(source), includePrefix, it) }
             }, enabled)
         }
         ImageOperation.QR -> {
