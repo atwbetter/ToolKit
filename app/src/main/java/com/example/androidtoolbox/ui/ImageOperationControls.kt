@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -21,6 +22,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.androidtoolbox.core.BorderPreset
+import com.example.androidtoolbox.core.BorderStyle
+import com.example.androidtoolbox.core.ImageBorder
 import com.example.androidtoolbox.core.ImageFormat
 import com.example.androidtoolbox.core.ImageSource
 import com.example.androidtoolbox.core.ImageTools
@@ -28,6 +32,7 @@ import com.example.androidtoolbox.core.WatermarkColor
 import com.example.androidtoolbox.core.WatermarkMode
 import com.example.androidtoolbox.core.WatermarkPosition
 import com.example.androidtoolbox.core.WatermarkStyle
+import com.example.androidtoolbox.core.photoExifLines
 import java.io.File
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -42,6 +47,8 @@ internal fun ImageOperationControls(
     watermark: WatermarkStyle,
     updateWatermark: (WatermarkStyle) -> Unit,
     showWatermarkPreview: () -> Unit,
+    border: BorderStyle,
+    updateBorder: (BorderStyle) -> Unit,
     working: Boolean,
     run: (ImageFormat?, (File) -> Unit) -> Unit,
 ) {
@@ -130,6 +137,21 @@ internal fun ImageOperationControls(
             TextButton(showWatermarkPreview, enabled = ready) { Text("查看整图预览") }
             PrimaryButton(operation.action, { edit { ImageTools.watermark(it, watermark) } }, enabled = ready)
         }
+        ImageOperation.BORDER -> {
+            val original = checkNotNull(source)
+            val layout = ImageBorder.layout(original.width, original.height, border, original.exif)
+            BorderControls(border, updateBorder, enabled)
+            if (border.preset == BorderPreset.EXIF) {
+                val exifLines = photoExifLines(original.exif)
+                ImageDetail(if (exifLines.isEmpty()) "未读取到拍摄参数，可以添加说明文字。" else exifLines.joinToString("\n"))
+            }
+            ImageDetail("输出尺寸 ${layout.width} × ${layout.height} px · PNG")
+            if (!layout.canExport) {
+                Text("加框后尺寸超出限制，请减小边框或先缩小图片。", color = MaterialTheme.colorScheme.error)
+            }
+            PrimaryButton(operation.action, { edit { ImageBorder.add(it, border, original.exif) } },
+                enabled && layout.canExport && border.argb != null)
+        }
         ImageOperation.STITCH -> {
             var vertical by rememberSaveable { mutableStateOf(true) }
             Choices(listOf(true, false), vertical, enabled, { if (it) "纵向" else "横向" }) { vertical = it }
@@ -206,21 +228,42 @@ private fun WatermarkControls(style: WatermarkStyle, update: (WatermarkStyle) ->
         }
     } else {
         ImageDetail("水印错行排列，覆盖整张图片。")
-        WatermarkSlider("平铺间距", style.spacing, WatermarkStyle.SPACINGS, "%", enabled) {
+        ImageSlider("平铺间距", style.spacing, WatermarkStyle.SPACINGS, "%", enabled) {
             update(style.copy(spacing = it))
         }
     }
 
-    WatermarkSlider("倾斜角度", style.angle, WatermarkStyle.ANGLES, "°", enabled) { update(style.copy(angle = it)) }
+    ImageSlider("倾斜角度", style.angle, WatermarkStyle.ANGLES, "°", enabled) { update(style.copy(angle = it)) }
     Choices(listOf(-30, 0, 30), style.angle, enabled, { if (it > 0) "+$it°" else "$it°" }) { update(style.copy(angle = it)) }
     ImageDetail("文字颜色")
     Choices(WatermarkColor.entries, style.color, enabled, WatermarkColor::label) { update(style.copy(color = it)) }
-    WatermarkSlider("字号", style.size, WatermarkStyle.SIZES, "%", enabled) { update(style.copy(size = it)) }
-    WatermarkSlider("不透明度", style.opacity, WatermarkStyle.OPACITIES, "%", enabled) { update(style.copy(opacity = it)) }
+    ImageSlider("字号", style.size, WatermarkStyle.SIZES, "%", enabled) { update(style.copy(size = it)) }
+    ImageSlider("不透明度", style.opacity, WatermarkStyle.OPACITIES, "%", enabled) { update(style.copy(opacity = it)) }
+}
+
+private val borderColors = listOf("白色" to "#FFFFFF", "黑色" to "#1B1B1D", "米白" to "#F1E8D8", "深蓝" to "#253A57")
+
+@Composable
+private fun BorderControls(style: BorderStyle, update: (BorderStyle) -> Unit, enabled: Boolean) {
+    Choices(BorderPreset.entries, style.preset, enabled, BorderPreset::label) { update(style.copy(preset = it)) }
+    ImageSlider("边框宽度（图片短边的比例）", style.thickness, BorderStyle.THICKNESS, "%", enabled) {
+        update(style.copy(thickness = it))
+    }
+    ImageDetail("边框颜色")
+    Choices(borderColors, borderColors.find { it.second.equals(style.color, ignoreCase = true) }, enabled, { it.first }) {
+        update(style.copy(color = it.second))
+    }
+    OutlinedTextField(style.color, { update(style.copy(color = it.take(8))) }, Modifier.fillMaxWidth(),
+        enabled = enabled, label = { Text("自定义颜色（HEX）") }, placeholder = { Text("#FFFFFF") }, singleLine = true,
+        isError = style.argb == null)
+    if (style.preset != BorderPreset.UNIFORM) {
+        OutlinedTextField(style.caption, { update(style.copy(caption = it.take(BorderStyle.MAX_CAPTION))) }, Modifier.fillMaxWidth(),
+            enabled = enabled, label = { Text("说明文字（选填）") }, singleLine = true)
+    }
 }
 
 @Composable
-private fun WatermarkSlider(label: String, value: Int, range: IntRange, unit: String, enabled: Boolean, update: (Int) -> Unit) {
+private fun ImageSlider(label: String, value: Int, range: IntRange, unit: String, enabled: Boolean, update: (Int) -> Unit) {
     ImageDetail("$label $value$unit")
     Slider(value.toFloat(), { update(it.roundToInt()) }, Modifier.semantics { contentDescription = label },
         enabled = enabled, valueRange = range.first.toFloat()..range.last.toFloat())
@@ -228,7 +271,7 @@ private fun WatermarkSlider(label: String, value: Int, range: IntRange, unit: St
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun <T> Choices(options: List<T>, selected: T, enabled: Boolean, label: (T) -> String, choose: (T) -> Unit) {
+private fun <T : Any> Choices(options: List<T>, selected: T?, enabled: Boolean, label: (T) -> String, choose: (T) -> Unit) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         options.forEach { option ->
             FilterChip(option == selected, { choose(option) }, enabled = enabled, label = { Text(label(option)) })

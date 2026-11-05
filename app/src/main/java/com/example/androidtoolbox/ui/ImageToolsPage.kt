@@ -7,6 +7,7 @@ import android.net.Uri
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas as PreviewCanvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -37,6 +38,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -62,6 +65,7 @@ internal enum class ImageOperation(val label: String, val group: ImageGroup, val
     ROTATE("旋转 / 翻转", ImageGroup.EDIT),
     RESIZE("尺寸调整", ImageGroup.EDIT, "调整尺寸"),
     WATERMARK("文字水印", ImageGroup.EDIT, "添加水印"),
+    BORDER("图片添加边框", ImageGroup.EDIT, "添加边框"),
     STITCH("图片拼接", ImageGroup.EDIT, "拼接图片"),
     COMPRESS("压缩", ImageGroup.EXPORT, "压缩图片"),
     CONVERT("格式转换", ImageGroup.EXPORT, "转换格式"),
@@ -91,6 +95,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     var resultName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingSave by rememberSaveable { mutableStateOf<String?>(null) }
     var watermark by rememberSaveable { mutableStateOf(WatermarkStyle()) }
+    var border by rememberSaveable { mutableStateOf(BorderStyle()) }
     var showingWatermarkPreview by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -218,6 +223,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     val title = when {
                         stitch -> "原图列表"
+                        operation == ImageOperation.BORDER && images != null -> "边框实时预览"
                         watermarkPreview != null -> "水印实时预览"
                         else -> "原图"
                     }
@@ -231,12 +237,16 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 when {
                     images != null -> {
                         val selection = crop.takeIf { operation == ImageOperation.CROP }
-                        SourcePreview(
-                            images.preview, selection,
-                            selectCrop = if (!working && selection != null) ({ fields -> crop = fields }) else null,
-                            pickColor = if (operation == ImageOperation.COLOR) ({ color -> pickedColor = color }) else null,
-                            watermark = watermarkPreview,
-                        )
+                        if (operation == ImageOperation.BORDER) {
+                            BorderPreview(images.preview, border)
+                        } else {
+                            SourcePreview(
+                                images.preview, selection,
+                                selectCrop = if (!working && selection != null) ({ fields -> crop = fields }) else null,
+                                pickColor = if (operation == ImageOperation.COLOR) ({ color -> pickedColor = color }) else null,
+                                watermark = watermarkPreview,
+                            )
+                        }
                         val first = images.preview.source
                         val size = first.bytes?.let { " · " + Formatter.formatFileSize(context, it) }.orEmpty()
                         ImageDetail("${first.name} · ${first.width} × ${first.height} px$size")
@@ -279,6 +289,15 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                             showWatermarkPreview = {
                                 focus.clearFocus()
                                 showingWatermarkPreview = true
+                            },
+                            border = border,
+                            updateBorder = {
+                                if (border != it) {
+                                    border = it
+                                    resultName = null
+                                    notice = null
+                                    error = null
+                                }
                             },
                             working = working, run = ::run,
                         )
@@ -545,10 +564,35 @@ private fun SourcePreview(
             }, contentScale = ContentScale.Fit)
 }
 
-private fun fittedImage(width: Float, height: Float, bitmap: Bitmap): Rect {
-    val scale = minOf(width / bitmap.width, height / bitmap.height)
-    val w = scale * bitmap.width
-    val h = scale * bitmap.height
+@Composable
+private fun BorderPreview(preview: ImagePreview, style: BorderStyle) {
+    val (source, bitmap) = preview
+    val layout = remember(source, style) { ImageBorder.layout(source.width, source.height, style, source.exif) }
+    val color = style.argb ?: android.graphics.Color.WHITE
+    PreviewCanvas(
+        Modifier.fillMaxWidth().height(212.dp).clip(RoundedCornerShape(10.dp)).background(Pale)
+            .semantics { contentDescription = "边框效果预览" },
+    ) {
+        val width = layout.width.toFloat()
+        val height = layout.height.toFloat()
+        val area = fittedImage(size.width, size.height, width, height)
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.withSave {
+                translate(area.left, area.top)
+                scale(area.width / width, area.height / height)
+                ImageBorder.draw(this, bitmap, layout, color)
+            }
+        }
+    }
+}
+
+private fun fittedImage(width: Float, height: Float, bitmap: Bitmap): Rect =
+    fittedImage(width, height, bitmap.width.toFloat(), bitmap.height.toFloat())
+
+private fun fittedImage(width: Float, height: Float, imageWidth: Float, imageHeight: Float): Rect {
+    val scale = minOf(width / imageWidth, height / imageHeight)
+    val w = scale * imageWidth
+    val h = scale * imageHeight
     return Rect(Offset((width - w) / 2, (height - h) / 2), Size(w, h))
 }
 

@@ -22,6 +22,24 @@ class ImageToolsTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val resolver get() = context.contentResolver
 
+    @Test fun solidBorderKeepsPhotoPixelsAndTransparency() {
+        val original = Bitmap.createBitmap(100, 60, Bitmap.Config.ARGB_8888)
+        original.setPixel(0, 0, Color.RED)
+        original.setPixel(99, 59, Color.GREEN)
+        val result = ImageBorder.add(original, BorderStyle(thickness = 10, color = "#112233"), emptyMap())
+        try {
+            assertEquals(112 to 72, result.width to result.height)
+            assertEquals(0xff112233.toInt(), result.getPixel(5, 6))
+            assertEquals(Color.RED, result.getPixel(6, 6))
+            assertEquals(Color.TRANSPARENT, result.getPixel(7, 6))
+            assertEquals(Color.GREEN, result.getPixel(105, 65))
+            assertEquals(0xff112233.toInt(), result.getPixel(105, 66))
+        } finally {
+            result.recycle()
+            original.recycle()
+        }
+    }
+
     @Test fun exifOrientationSetsCropCoordinatesAndCentimetersConvertToDpi() {
         withFile(".jpg") { file ->
             saveSolid(file, 48, 24, Color.RED, ImageFormat.JPEG)
