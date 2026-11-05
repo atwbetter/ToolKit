@@ -36,13 +36,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -440,12 +441,13 @@ internal fun OtpPage(
                 }
             }
             item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(query, { query = it }, Modifier.weight(1f), singleLine = true,
                         label = { Text("搜索平台名称或账号") },
                         trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("清除") } })
-                    OutlinedIconButton(onClick = onScan, enabled = !busy && storeError == null,
-                        modifier = Modifier.size(56.dp), shape = RoundedCornerShape(12.dp)) {
+                    FilledIconButton(onClick = onScan, enabled = !busy && storeError == null,
+                        modifier = Modifier.size(56.dp), shape = RoundedCornerShape(12.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Indigo, contentColor = Color.White)) {
                         Icon(Icons.Outlined.Add, contentDescription = "扫描添加账号")
                     }
                 }
