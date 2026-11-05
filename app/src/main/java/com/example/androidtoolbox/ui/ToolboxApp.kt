@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.QrCode2
@@ -41,6 +42,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -438,9 +440,15 @@ internal fun OtpPage(
                 }
             }
             item {
-                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true,
-                    label = { Text("搜索平台名称或账号") },
-                    trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("清除") } })
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(query, { query = it }, Modifier.weight(1f), singleLine = true,
+                        label = { Text("搜索平台名称或账号") },
+                        trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("清除") } })
+                    OutlinedIconButton(onClick = onScan, enabled = !busy && storeError == null,
+                        modifier = Modifier.size(56.dp), shape = RoundedCornerShape(12.dp)) {
+                        Icon(Icons.Outlined.Add, contentDescription = "扫描添加账号")
+                    }
+                }
                 SectionTitle(if (query.isBlank()) "我的账号" else "搜索结果（${filtered.size} / ${accounts.size}）")
             }
             if (accounts.isEmpty()) item {
