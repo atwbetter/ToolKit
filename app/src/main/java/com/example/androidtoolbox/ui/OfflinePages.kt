@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -209,7 +210,10 @@ internal fun Toggle(label: String, checked: Boolean, change: (Boolean) -> Unit) 
 }
 
 @Composable
-internal fun DataPage(local: LocalSnapshot, accountCount: Int, busy: Boolean, otpError: String?, lastBackup: String?, actions: LocalActions, back: () -> Unit) {
+internal fun DataPage(
+    local: LocalSnapshot, accountCount: Int, busy: Boolean, otpError: String?, lastBackup: String?,
+    actions: LocalActions, back: () -> Unit, onSettings: () -> Unit,
+) {
     var encrypted by rememberSaveable { mutableStateOf(true) }
     var includeOtp by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
@@ -217,7 +221,9 @@ internal fun DataPage(local: LocalSnapshot, accountCount: Int, busy: Boolean, ot
     var importPassword by remember { mutableStateOf("") }
     val canExport = !busy && (!encrypted || (password.isNotBlank() && password.length >= 12 && password == repeatPassword))
     Column {
-        Header("数据与备份", "工具箱 0.2.0 · 数据在本地，迁移由你决定", back)
+        Header("数据与备份", "工具箱 0.2.0 · 数据在本地，迁移由你决定", back, trailing = {
+            IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "设置", tint = Ink) }
+        })
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             item { Card(colors = CardDefaults.cardColors(containerColor = Pale)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -63,9 +63,18 @@ fun ToolboxApp(
     onSaveQr: (Bitmap) -> Unit, onShareQr: (Bitmap) -> Unit, onCopy: (String, String) -> Unit,
 ) {
     var page by rememberSaveable { mutableStateOf("HOME") }
+    var privatePath by rememberSaveable { mutableStateOf("") }
     fun open(id: String) { page = id; if (id in TOOL_IDS) actions.visit(id) }
     val mainPage = page in setOf("HOME", "ALL", "FAVORITES", "HISTORY", "PROFILE")
-    BackHandler(page != "HOME") { page = "HOME" }
+    fun back() {
+        when (page) {
+            "SETTINGS" -> page = "PROFILE"
+            "ABOUT" -> page = "SETTINGS"
+            "FILES" -> if (privatePath.isEmpty()) page = "SETTINGS" else privatePath = privatePath.substringBeforeLast('/', "")
+            else -> page = "HOME"
+        }
+    }
+    BackHandler(page != "HOME", onBack = ::back)
     MaterialTheme(colorScheme = lightColorScheme(primary = Indigo, background = Canvas, surface = Color.White, onSurface = Ink)) {
         Scaffold(containerColor = Canvas, contentWindowInsets = WindowInsets.safeDrawing, bottomBar = {
             if (mainPage) NavigationBar(containerColor = Color.White) {
@@ -85,18 +94,27 @@ fun ToolboxApp(
                         Text(if (page in local.favorites) " 已收藏" else " 收藏工具", fontSize = 12.sp)
                     }
                 }
-                val back = { page = "HOME" }
                 when (page) {
                     "HOME", "ALL", "FAVORITES", "HISTORY" -> Directory(page, local, busy, actions, ::open)
-                    "NOTES" -> NotesPage(local.notes, busy, actions, onCopy, back)
-                    "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, back)
-                    "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, back)
-                    "IMAGE" -> ImageToolsPage(onCopy, back)
-                    "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, back)
+                    "NOTES" -> NotesPage(local.notes, busy, actions, onCopy, ::back)
+                    "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, ::back)
+                    "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, ::back)
+                    "IMAGE" -> ImageToolsPage(onCopy, ::back)
+                    "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, ::back)
                     "OTP" -> OtpPage(accounts, otpStoreError, busy || storageError != null, onScanOtp, onAddOtp,
                         onDeleteOtp, onCopy, onImageOtp, onImportOtpText, onSaveQr, onShareQr,
-                        otpManualRequested, onOtpManualShown, { page = "PROFILE" }, back)
-                    "PROFILE" -> DataPage(local, accounts.size, busy, otpStoreError, lastBackup, actions, back)
+                        otpManualRequested, onOtpManualShown, { page = "PROFILE" }, ::back)
+                    "PROFILE" -> DataPage(local, accounts.size, busy, otpStoreError, lastBackup, actions, ::back) { page = "SETTINGS" }
+                    "SETTINGS" -> SettingsPage(::back, { page = "ABOUT" }) {
+                        privatePath = ""
+                        page = "FILES"
+                    }
+                    "ABOUT" -> AboutPage(::back)
+                    "FILES" -> key(privatePath) {
+                        PrivateFilesPage(privatePath, ::back) { name ->
+                            privatePath = if (privatePath.isEmpty()) name else "$privatePath/$name"
+                        }
+                    }
                 }
             }
         }
