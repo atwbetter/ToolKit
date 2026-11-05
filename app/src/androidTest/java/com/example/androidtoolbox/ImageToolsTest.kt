@@ -22,6 +22,24 @@ class ImageToolsTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private val resolver get() = context.contentResolver
 
+    @Test fun blurredFrameKeepsPhotoPixelsAndSoftensTheBorder() {
+        val original = Bitmap.createBitmap(100, 60, Bitmap.Config.ARGB_8888)
+        original.eraseColor(Color.RED)
+        original.setPixel(50, 30, Color.TRANSPARENT)
+        val result = ImageBorder.add(original, BorderStyle(preset = BorderPreset.BLUR, thickness = 10), emptyMap())
+        try {
+            assertEquals(Color.RED, result.getPixel(6, 6))
+            assertEquals(Color.TRANSPARENT, result.getPixel(56, 36))
+            val edge = result.getPixel(0, 0)
+            assertEquals(255, Color.alpha(edge))
+            assertTrue(Color.red(edge) > Color.blue(edge))
+            assertTrue(Color.blue(edge) > 0)
+        } finally {
+            result.recycle()
+            original.recycle()
+        }
+    }
+
     @Test fun solidBorderKeepsPhotoPixelsAndTransparency() {
         val original = Bitmap.createBitmap(100, 60, Bitmap.Config.ARGB_8888)
         original.setPixel(0, 0, Color.RED)

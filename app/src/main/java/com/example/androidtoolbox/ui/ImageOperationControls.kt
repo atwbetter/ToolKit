@@ -22,6 +22,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.androidtoolbox.core.BorderAlignment
 import com.example.androidtoolbox.core.BorderPreset
 import com.example.androidtoolbox.core.BorderStyle
 import com.example.androidtoolbox.core.ImageBorder
@@ -141,7 +142,7 @@ internal fun ImageOperationControls(
             val original = checkNotNull(source)
             val layout = ImageBorder.layout(original.width, original.height, border, original.exif)
             BorderControls(border, updateBorder, enabled)
-            if (border.preset == BorderPreset.EXIF) {
+            if (border.preset.hasExif) {
                 val exifLines = photoExifLines(original.exif)
                 ImageDetail(if (exifLines.isEmpty()) "未读取到拍摄参数，可以添加说明文字。" else exifLines.joinToString("\n"))
             }
@@ -245,8 +246,12 @@ private val borderColors = listOf("白色" to "#FFFFFF", "黑色" to "#1B1B1D", 
 
 @Composable
 private fun BorderControls(style: BorderStyle, update: (BorderStyle) -> Unit, enabled: Boolean) {
-    Choices(BorderPreset.entries, style.preset, enabled, BorderPreset::label) { update(style.copy(preset = it)) }
-    ImageSlider("边框宽度（图片短边的比例）", style.thickness, BorderStyle.THICKNESS, "%", enabled) {
+    Choices(BorderPreset.entries, style.preset, enabled, BorderPreset::label) { preset ->
+        val color = if (style.color.equals(style.preset.defaultColor, ignoreCase = true)) preset.defaultColor else style.color
+        update(style.copy(preset = preset, color = color))
+    }
+    val thicknessLabel = if (style.preset == BorderPreset.BOTTOM) "下边框高度" else "边框宽度"
+    ImageSlider("$thicknessLabel（图片短边的比例）", style.thickness, BorderStyle.THICKNESS, "%", enabled) {
         update(style.copy(thickness = it))
     }
     ImageDetail("边框颜色")
@@ -256,9 +261,11 @@ private fun BorderControls(style: BorderStyle, update: (BorderStyle) -> Unit, en
     OutlinedTextField(style.color, { update(style.copy(color = it.take(8))) }, Modifier.fillMaxWidth(),
         enabled = enabled, label = { Text("自定义颜色（HEX）") }, placeholder = { Text("#FFFFFF") }, singleLine = true,
         isError = style.argb == null)
-    if (style.preset != BorderPreset.UNIFORM) {
+    if (style.preset.hasCaption) {
         OutlinedTextField(style.caption, { update(style.copy(caption = it.take(BorderStyle.MAX_CAPTION))) }, Modifier.fillMaxWidth(),
             enabled = enabled, label = { Text("说明文字（选填）") }, singleLine = true)
+        ImageDetail("下边框文字对齐")
+        Choices(BorderAlignment.entries, style.alignment, enabled, BorderAlignment::label) { update(style.copy(textAlignment = it)) }
     }
 }
 

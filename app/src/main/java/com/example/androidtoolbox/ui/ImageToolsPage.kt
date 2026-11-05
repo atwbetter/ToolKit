@@ -65,7 +65,7 @@ internal enum class ImageOperation(val label: String, val group: ImageGroup, val
     ROTATE("旋转 / 翻转", ImageGroup.EDIT),
     RESIZE("尺寸调整", ImageGroup.EDIT, "调整尺寸"),
     WATERMARK("文字水印", ImageGroup.EDIT, "添加水印"),
-    BORDER("图片添加边框", ImageGroup.EDIT, "添加边框"),
+    BORDER("图片添加边框", ImageGroup.EDIT, "预览"),
     STITCH("图片拼接", ImageGroup.EDIT, "拼接图片"),
     COMPRESS("压缩", ImageGroup.EXPORT, "压缩图片"),
     CONVERT("格式转换", ImageGroup.EXPORT, "转换格式"),
@@ -96,6 +96,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     var pendingSave by rememberSaveable { mutableStateOf<String?>(null) }
     var watermark by rememberSaveable { mutableStateOf(WatermarkStyle()) }
     var border by rememberSaveable { mutableStateOf(BorderStyle()) }
+    var showingBorderPreview by rememberSaveable { mutableStateOf(false) }
     var showingWatermarkPreview by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -159,6 +160,15 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         }
     }
 
+    fun saveResult(name: String, mime: String) {
+        pendingSave = name
+        save.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            type = mime
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_TITLE, "toolbox-image-${System.currentTimeMillis()}.${File(name).extension}")
+        })
+    }
+
     LaunchedEffect(cache) {
         withContext(Dispatchers.IO) {
             val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000
@@ -196,10 +206,11 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 if (!complete) file.delete()
             }
         }
+        if (operation == ImageOperation.BORDER) showingBorderPreview = true
     }
 
     LaunchedEffect(resultName) {
-        if (resultName != null) listState.animateScrollToItem(4)
+        if (resultName != null && operation != ImageOperation.BORDER) listState.animateScrollToItem(4)
     }
     LazyColumn(Modifier.fillMaxSize(), state = listState, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Header("图片处理工具", "本地处理 · 原图保留", back) }
@@ -307,18 +318,11 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }
-        resultName?.let { name ->
+        resultName?.takeUnless { operation == ImageOperation.BORDER && showingBorderPreview }?.let { name ->
             item {
                 key(name) {
                     ImageResultPanel(File(cache, name), source.takeIf { operation == ImageOperation.COMPRESS }, working,
-                        save = { mime ->
-                            pendingSave = name
-                            save.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                type = mime
-                                addCategory(Intent.CATEGORY_OPENABLE)
-                                putExtra(Intent.EXTRA_TITLE, "toolbox-image-${System.currentTimeMillis()}.${File(name).extension}")
-                            })
-                        },
+                        save = { mime -> saveResult(name, mime) },
                         reuse = {
                             single = Uri.fromFile(File(cache, name)).toString()
                             setOperation(ImageOperation.CROP)
@@ -337,6 +341,13 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         notice?.let { message -> item { Text(message, color = Indigo, modifier = Modifier.padding(horizontal = 22.dp)) } }
         item { Spacer(Modifier.height(12.dp)) }
     }
+    resultName?.takeIf { operation == ImageOperation.BORDER && showingBorderPreview }?.let { name ->
+        BorderResultDialog(
+            File(cache, name), working || pendingSave != null, notice, error,
+            save = { saveResult(name, ImageFormat.PNG.mime) },
+            close = { showingBorderPreview = false },
+        )
+    }
     if (showingWatermarkPreview && watermarkPreview != null && images != null) {
         val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
         val height = minOf(420.dp, windowHeight * .6f)
@@ -347,6 +358,42 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
             confirmButton = { TextButton({ showingWatermarkPreview = false }) { Text("完成") } },
         )
     }
+}
+
+private fun android.content.ContentResolver.readPreview(file: File): ImagePreview {
+    check(file.isFile) { "临时结果已失效，请重新生成" }
+    val source = readImageSource(Uri.fromFile(file))
+    return ImagePreview(source, ImageTools.preview(this, source))
+}
+
+@Composable
+private fun BorderResultDialog(file: File, busy: Boolean, notice: String?, error: String?, save: () -> Unit, close: () -> Unit) {
+    val resolver = LocalContext.current.contentResolver
+    val result by produceState<Result<ImagePreview>?>(null, file) {
+        value = imageLoad { resolver.readPreview(file) }
+    }
+    val preview = result?.getOrNull()
+    val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
+    AlertDialog(
+        onDismissRequest = { if (!busy) close() },
+        title = { Text("边框预览") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when {
+                    preview != null -> {
+                        SourcePreview(preview, previewHeight = minOf(460.dp, windowHeight * .50f))
+                        ImageDetail("${preview.source.width} × ${preview.source.height} px · PNG")
+                    }
+                    result == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    else -> Text(result?.exceptionOrNull()?.message ?: "无法读取预览", color = MaterialTheme.colorScheme.error)
+                }
+                notice?.let { Text(it, color = Indigo) }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { Button(save, enabled = !busy && preview != null) { Text("保存") } },
+        dismissButton = { TextButton(close, enabled = !busy) { Text("返回继续编辑") } },
+    )
 }
 
 private suspend fun <T> imageLoad(block: () -> T): Result<T> {
@@ -375,10 +422,7 @@ private fun ImageResultPanel(
                 DataInputStream(file.inputStream()).use { it.readFully(prefix) }
                 String(prefix, Charsets.US_ASCII)
             }
-            else {
-                val source = context.contentResolver.readImageSource(Uri.fromFile(file))
-                ImagePreview(source, ImageTools.preview(context.contentResolver, source))
-            }
+            else context.contentResolver.readPreview(file)
         }
     }
     ImagePanel {
@@ -569,6 +613,9 @@ private fun BorderPreview(preview: ImagePreview, style: BorderStyle) {
     val (source, bitmap) = preview
     val layout = remember(source, style) { ImageBorder.layout(source.width, source.height, style, source.exif) }
     val color = style.argb ?: android.graphics.Color.WHITE
+    val backdrop = remember(bitmap, style.preset) {
+        if (style.preset == BorderPreset.BLUR) ImageBorder.blurredBackground(bitmap) else null
+    }
     PreviewCanvas(
         Modifier.fillMaxWidth().height(212.dp).clip(RoundedCornerShape(10.dp)).background(Pale)
             .semantics { contentDescription = "边框效果预览" },
@@ -580,7 +627,7 @@ private fun BorderPreview(preview: ImagePreview, style: BorderStyle) {
             canvas.nativeCanvas.withSave {
                 translate(area.left, area.top)
                 scale(area.width / width, area.height / height)
-                ImageBorder.draw(this, bitmap, layout, color)
+                ImageBorder.draw(this, bitmap, layout, color, backdrop)
             }
         }
     }
