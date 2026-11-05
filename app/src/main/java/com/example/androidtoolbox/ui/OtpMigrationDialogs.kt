@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -61,6 +63,7 @@ internal fun OtpMigrationExportDialog(
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val previewScroll = rememberScrollState()
     val filtered = remember(accounts, query) { OtpEngine.search(accounts, query) }
     LaunchedEffect(pages, page) {
         bitmap = null
@@ -70,7 +73,11 @@ internal fun OtpMigrationExportDialog(
     AlertDialog(onDismissRequest = { if (!working) dismiss() }, title = { Text("导出 Google 迁移二维码") },
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         text = {
-            Column(Modifier.heightIn(max = 490.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 490.dp)
+                    .then(if (pages.isNotEmpty()) Modifier.verticalScroll(previewScroll) else Modifier),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text("二维码包含账号密钥，仅交给你信任的设备。", color = Muted, fontSize = 12.sp)
                 if (pages.isEmpty()) {
                     OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索平台或账号") })
@@ -99,7 +106,7 @@ internal fun OtpMigrationExportDialog(
                     Text("第 ${page + 1} / ${pages.size} 张 · 共 ${selected.size} 个账号", color = Ink)
                     Text("在 Google Authenticator 中选择「转移账号 → 导入账号」，依次扫描全部二维码。", color = Muted, fontSize = 12.sp)
                     if (bitmap != null) Image(bitmap!!.asImageBitmap(), "Google 批量迁移二维码 ${page + 1}",
-                        Modifier.fillMaxWidth().weight(1f, fill = false).aspectRatio(1f))
+                        Modifier.fillMaxWidth().padding(top = 12.dp).aspectRatio(1f))
                     else CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         TextButton(onClick = { bitmap = null; page-- }, enabled = page > 0) { Text("上一张") }
