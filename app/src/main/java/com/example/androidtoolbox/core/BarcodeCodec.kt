@@ -166,5 +166,8 @@ internal fun renderMatrix(matrix: BitMatrix, foreground: Int, footer: Int = 0): 
     val width = matrix.width; val height = matrix.height + footer
     val pixels = IntArray(width * height) { Color.WHITE }
     for (y in 0 until matrix.height) for (x in 0 until width) if (matrix[x, y]) pixels[y * width + x] = foreground
-    return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    // The barcode caption is drawn onto this bitmap with Canvas.
+    return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+        setPixels(pixels, 0, width, 0, 0, width, height)
+    }
 }

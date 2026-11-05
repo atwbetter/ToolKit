@@ -19,6 +19,14 @@ class BarcodeBitmapTest {
             val bytes = ByteArrayOutputStream().apply { assertTrue(image.compress(Bitmap.CompressFormat.PNG, 100, this)) }.toByteArray()
             val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             try {
+                val barcodeHeight = (size / 4).coerceAtLeast(160)
+                assertEquals(barcodeHeight + if (caption) size / 18 else 0, decoded.height)
+                if (caption) {
+                    val footerHeight = decoded.height - barcodeHeight
+                    val footerPixels = IntArray(decoded.width * footerHeight)
+                    decoded.getPixels(footerPixels, 0, decoded.width, 0, barcodeHeight, decoded.width, footerHeight)
+                    assertTrue("Missing ${format.label} caption at $size px", footerPixels.any { it != Color.WHITE })
+                }
                 val result = BarcodeCodec.decode(decoded)
                 assertEquals(if (format == CodeFormat.CODABAR) format.example else BarcodeCodec.normalize(format.example, format), result.text)
             } finally { image.recycle(); decoded.recycle() }
