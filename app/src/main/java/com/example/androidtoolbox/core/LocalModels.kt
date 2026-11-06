@@ -16,5 +16,20 @@ data class LocalSnapshot(
     val recent: List<RecentTool> = emptyList(),
 )
 
+internal data class LocalSummary(
+    val noteCount: Int = 0,
+    val favorites: Set<String> = emptySet(),
+    val recent: List<RecentTool> = emptyList(),
+)
+
+internal data class NotePreview(
+    val id: String,
+    val title: String,
+    val excerpt: String,
+    val hasBody: Boolean,
+    val pinned: Boolean,
+    val updatedAt: Long,
+)
+
 // Stable IDs are persisted and exported; never persist translated display labels.
 val TOOL_IDS = setOf("QR", "CRYPTO", "OTP", "NOTES", "JSON", "TEXT", "UNITS", "PASSWORD", "TIME", "IMAGE")

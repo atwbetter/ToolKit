@@ -2,11 +2,24 @@ package com.example.androidtoolbox
 
 import com.example.androidtoolbox.core.OfflineTools
 import com.example.androidtoolbox.core.JsonTools
+import com.example.androidtoolbox.core.imageSampleSize
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.ZoneId
 
 class OfflineToolsTest {
+    @Test fun imageSampleLimitsBothEdgesAndRoundedPixelCount() {
+        assertEquals(1, imageSampleSize(2000, 2000, 4096, 4_000_000))
+        assertEquals(2, imageSampleSize(2001, 2000, 4096, 4_000_000))
+        assertEquals(4, imageSampleSize(8193, 1, 4096, 4_000_000))
+    }
+
+    @Test fun formattingRejectsExcessiveExpansionButAllowsCompactMode() {
+        val input = "[".repeat(60) + List(20_000) { "0" }.joinToString(",") + "]".repeat(60)
+        assertThrows(IllegalArgumentException::class.java) { JsonTools.format(input) }
+        assertEquals(input, JsonTools.format(input, compact = true))
+    }
+
     @Test fun jsonPreservesPrecisionAndEscapes() {
         val input = "{\"n\":900719925474099312345,\"s\":\"a\\\"b\\n\",\"a\":[true,null,-1.20e+4]}"
         assertEquals(input, JsonTools.format(JsonTools.format(input), true))

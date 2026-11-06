@@ -52,17 +52,18 @@ private val catalog = listOf(
 )
 
 @Composable
-fun ToolboxApp(
+internal fun ToolboxApp(
     accounts: List<OtpAccount>, otpStoreError: String?, qrScanned: CodeResult?,
-    local: LocalSnapshot, busy: Boolean, storageError: String?, lastBackup: String?, importData: BackupData?, actions: LocalActions,
+    local: LocalSummary, notesVersion: Int, otpCount: Int, onPageChanged: (String) -> Unit, busy: Boolean, storageError: String?, lastBackup: String?, importData: BackupData?, actions: LocalActions,
     onScanQr: () -> Unit, onScanOtp: () -> Unit, onImageQr: () -> Unit, onImageOtp: () -> Unit,
     onAddOtp: (OtpAccount) -> Unit, onDeleteOtp: (OtpAccount) -> Unit,
     otpManualRequested: Boolean, onOtpManualShown: () -> Unit,
     otpMigration: OtpMigrationBatch?, onImportOtpText: (String) -> Unit,
     onConfirmOtpMigration: () -> Unit, onCancelOtpMigration: () -> Unit,
-    onSaveQr: (Bitmap) -> Unit, onShareQr: (Bitmap) -> Unit, onCopy: (String, String) -> Unit,
+    onSaveQr: (Bitmap) -> Unit, onShareQr: (Bitmap) -> Unit, onCopy: (String, String) -> Unit, onSaveText: (String) -> Unit,
 ) {
     var page by rememberSaveable { mutableStateOf("HOME") }
+    LaunchedEffect(page) { onPageChanged(page) }
     var privatePath by rememberSaveable { mutableStateOf("") }
     fun open(id: String) { page = id; if (id in TOOL_IDS) actions.visit(id) }
     val mainPage = page in setOf("HOME", "ALL", "FAVORITES", "HISTORY", "PROFILE")
@@ -96,15 +97,15 @@ fun ToolboxApp(
                 }
                 when (page) {
                     "HOME", "ALL", "FAVORITES", "HISTORY" -> Directory(page, local, busy, actions, ::open)
-                    "NOTES" -> NotesPage(local.notes, busy, actions, onCopy, ::back)
-                    "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, ::back)
+                    "NOTES" -> NotesPage(local.noteCount, notesVersion, busy || storageError != null, actions, onCopy, ::back)
+                    "JSON", "TEXT", "UNITS", "PASSWORD", "TIME" -> UtilityPage(page, onCopy, onSaveText, ::back)
                     "QR" -> QrPage(qrScanned, onScanQr, onSaveQr, onShareQr, onCopy, onImageQr, ::back)
                     "IMAGE" -> ImageToolsPage(onCopy, ::back)
-                    "CRYPTO" -> CryptoPage(onCopy, actions.saveNote, !busy && storageError == null, ::back)
+                    "CRYPTO" -> CryptoPage(onCopy, onSaveText, actions.saveNote, !busy && storageError == null, ::back)
                     "OTP" -> OtpPage(accounts, otpStoreError, busy || storageError != null, onScanOtp, onAddOtp,
                         onDeleteOtp, onCopy, onImageOtp, onImportOtpText, onSaveQr, onShareQr,
                         otpManualRequested, onOtpManualShown, { page = "PROFILE" }, ::back)
-                    "PROFILE" -> DataPage(local, accounts.size, busy, otpStoreError, lastBackup, actions, ::back) { page = "SETTINGS" }
+                    "PROFILE" -> DataPage(local, otpCount, busy, otpStoreError, lastBackup, actions, ::back) { page = "SETTINGS" }
                     "SETTINGS" -> SettingsPage(::back, { page = "ABOUT" }) {
                         privatePath = ""
                         page = "FILES"
@@ -129,7 +130,7 @@ fun ToolboxApp(
 }
 
 @Composable
-private fun Directory(page: String, local: LocalSnapshot, busy: Boolean, actions: LocalActions, open: (String) -> Unit) {
+private fun Directory(page: String, local: LocalSummary, busy: Boolean, actions: LocalActions, open: (String) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf("全部") }
     var clearHistory by remember { mutableStateOf(false) }
@@ -151,7 +152,7 @@ private fun Directory(page: String, local: LocalSnapshot, busy: Boolean, actions
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("你的离线工作台", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Text("记录灵感、转换数据、保护账号", color = Color.White.copy(alpha = .85f), fontSize = 12.sp)
-                    Text("${local.notes.size} 条便签  ·  ${local.favorites.size} 个收藏  ›", color = Color.White, fontSize = 12.sp)
+                    Text("${local.noteCount} 条便签  ·  ${local.favorites.size} 个收藏  ›", color = Color.White, fontSize = 12.sp)
                 }
             }
         }

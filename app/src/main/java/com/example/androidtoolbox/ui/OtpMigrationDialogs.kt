@@ -18,7 +18,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
 import com.example.androidtoolbox.core.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -62,13 +67,22 @@ internal fun OtpMigrationExportDialog(
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
+    val scope = rememberForegroundScope()
     val previewScroll = rememberScrollState()
     val filtered = remember(accounts, query) { OtpEngine.search(accounts, query) }
-    LaunchedEffect(pages, page) {
-        bitmap = null
-        if (pages.isNotEmpty()) runCatching { withContext(Dispatchers.Default) { QrCodec.generate(pages[page], 1024) } }
-            .onSuccess { bitmap = it }.onFailure { error = "生成二维码失败，请减少所选账号或使用加密备份" }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(pages, page, lifecycle) {
+        val content = pages.getOrNull(page) ?: return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            try {
+                bitmap = withContext(Dispatchers.Default) { QrCodec.generate(content, 1024) }
+                awaitCancellation()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                error = "生成二维码失败，请减少所选账号或使用加密备份"
+            } finally { bitmap = null }
+        }
     }
     AlertDialog(onDismissRequest = { if (!working) dismiss() }, title = { Text("导出 Google 迁移二维码") },
         properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
@@ -124,9 +138,15 @@ internal fun OtpMigrationExportDialog(
             if (pages.isEmpty()) TextButton(onClick = {
                 working = true; error = null
                 scope.launch {
-                    runCatching { withContext(Dispatchers.Default) { OtpMigration.encode(accounts.filter { it.id in selected }) } }
-                        .onSuccess { page = 0; pages = it }.onFailure { error = it.message ?: "导出失败" }
-                    working = false
+                    try {
+                        val ids = selected
+                        pages = withContext(Dispatchers.Default) { OtpMigration.encode(accounts.filter { it.id in ids }) }
+                        page = 0
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        error = failure.message ?: "导出失败"
+                    } finally { working = false }
                 }
             }, enabled = selected.isNotEmpty() && !working) { Text(if (working) "正在生成…" else "生成二维码") }
             else TextButton(onClick = dismiss) { Text("完成") }

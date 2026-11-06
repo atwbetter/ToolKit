@@ -39,6 +39,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.androidtoolbox.core.CameraQrAnalyzer
 import com.example.androidtoolbox.core.CodeResult
 import kotlinx.coroutines.delay
@@ -240,10 +241,13 @@ private fun CameraPreview(
         camera?.let { current -> runCatching { current.cameraControl.enableTorch(torch && resumed && current.cameraInfo.hasFlashUnit()) } }
     }
     LaunchedEffect(camera, zoom) { camera?.cameraControl?.setZoomRatio(zoom) }
-    LaunchedEffect(camera, resumed, scanEnabled) {
-        while (camera != null && resumed && scanEnabled) {
-            focus(camera, view, view.width / 2f, view.height / 2f)
-            delay(3000)
+    LaunchedEffect(camera, lifecycleOwner, scanEnabled) {
+        val current = camera ?: return@LaunchedEffect
+        if (scanEnabled) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                focus(current, view, view.width / 2f, view.height / 2f)
+                delay(3000)
+            }
         }
     }
     AndroidView(factory = { view }, modifier = modifier)

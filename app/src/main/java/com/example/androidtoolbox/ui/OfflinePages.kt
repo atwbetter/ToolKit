@@ -29,46 +29,100 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.androidtoolbox.core.*
 import java.time.ZoneId
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 @Composable
-internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActions, onCopy: (String, String) -> Unit, back: () -> Unit) {
+internal fun NotesPage(noteCount: Int, version: Int, busy: Boolean, actions: LocalActions, onCopy: (String, String) -> Unit, back: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     var pinnedOnly by rememberSaveable { mutableStateOf(false) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     var title by rememberSaveable { mutableStateOf("") }
     var body by rememberSaveable { mutableStateOf("") }
     var pinned by rememberSaveable { mutableStateOf(false) }
-    var deleting by remember { mutableStateOf<LocalNote?>(null) }
+    var existingNote by rememberSaveable { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<String?>(null) }
     var discard by remember { mutableStateOf(false) }
-    fun edit(note: LocalNote) { editingId = note.id; title = note.title; body = note.body; pinned = note.pinned }
+    var opening by remember { mutableStateOf(false) }
+    var noteError by remember { mutableStateOf<String?>(null) }
+    val store = LocalStore.get(androidx.compose.ui.platform.LocalContext.current)
+    val scope = rememberForegroundScope()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var filtered by remember { mutableStateOf<List<NotePreview>>(emptyList()) }
+    LaunchedEffect(store, lifecycle, query, pinnedOnly, version) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            if (query.isNotEmpty()) delay(150)
+            try {
+                filtered = withContext(Dispatchers.IO) {
+                    store.notePreviews(query, pinnedOnly) { ensureActive() }
+                }
+                noteError = null
+                awaitCancellation()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                noteError = failure.message ?: "读取便签失败"
+            } finally { filtered = emptyList() }
+        }
+    }
+    val dateFormat = remember { DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault()) }
+    fun edit(note: LocalNote, existing: Boolean) {
+        existingNote = existing; editingId = note.id; title = note.title; body = note.body; pinned = note.pinned
+    }
+    fun readNote(id: String, onRead: (LocalNote?) -> Unit) {
+        if (opening) return
+        opening = true
+        scope.launch {
+            try {
+                onRead(withContext(Dispatchers.IO) { store.note(id) })
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                noteError = failure.message ?: "读取便签失败"
+            } finally { opening = false }
+        }
+    }
+    fun closeEditor() { editingId = null; title = ""; body = "" }
     fun dismiss() {
-        val original = notes.find { it.id == editingId }
-        if (title != original?.title.orEmpty() || body != original?.body.orEmpty() || pinned != (original?.pinned ?: false)) discard = true
-        else editingId = null
+        val id = editingId ?: return
+        readNote(id) { original ->
+            if (editingId == id) {
+                if (title != original?.title.orEmpty() || body != original?.body.orEmpty() || pinned != (original?.pinned ?: false)) discard = true
+                else closeEditor()
+            }
+        }
     }
     Column {
         Header("离线便签", "点击保存后写入本机 · 支持搜索与置顶", back)
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("搜索标题或正文") }, shape = RoundedCornerShape(14.dp)) }
+            item { OutlinedTextField(query, { if (it.length <= 200) query = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("搜索标题或正文") }, shape = RoundedCornerShape(14.dp)) }
             item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(!pinnedOnly, { pinnedOnly = false }, label = { Text("全部 ${notes.size}") })
+                FilterChip(!pinnedOnly, { pinnedOnly = false }, label = { Text("全部 $noteCount") })
                 FilterChip(pinnedOnly, { pinnedOnly = true }, label = { Text("置顶") })
-                Spacer(Modifier.weight(1f)); TextButton(onClick = { edit(LocalNote(UUID.randomUUID().toString(), "", "")) }, enabled = !busy) { Text("＋ 新建") }
+                Spacer(Modifier.weight(1f)); TextButton(onClick = { edit(LocalNote(UUID.randomUUID().toString(), "", ""), false) }, enabled = !busy) { Text("＋ 新建") }
             } }
-            val filtered = notes.filter { (!pinnedOnly || it.pinned) && (it.title.contains(query, true) || it.body.contains(query, true)) }
-            if (filtered.isEmpty()) item { EmptyState(if (notes.isEmpty()) "还没有便签，点击「新建」记录第一个想法" else "没有匹配的便签") }
+            noteError?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
+            if (filtered.isEmpty() && !busy) item { EmptyState(if (noteCount == 0) "还没有便签，点击「新建」记录第一个想法" else "没有匹配的便签") }
             items(filtered, key = { it.id }) { note ->
-                Card(onClick = { edit(note) }, colors = CardDefaults.cardColors(containerColor = if (note.pinned) Pale else Color.White), shape = RoundedCornerShape(16.dp)) {
+                Card(onClick = { readNote(note.id) { if (it != null) edit(it, true) } }, enabled = !busy && !opening, colors = CardDefaults.cardColors(containerColor = if (note.pinned) Pale else Color.White), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Text(note.title.ifBlank { "未命名便签" }, fontWeight = FontWeight.Bold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(8.dp)); Text(note.body, color = Muted, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(8.dp)); Text(note.excerpt, color = Muted, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(12.dp))
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text((if (note.pinned) "置顶 · " else "") + DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(note.updatedAt)), modifier = Modifier.weight(1f), color = Muted, fontSize = 10.sp)
-                            NoteCopyButton(note.body, onCopy)
+                            Text((if (note.pinned) "置顶 · " else "") + dateFormat.format(Instant.ofEpochMilli(note.updatedAt)), modifier = Modifier.weight(1f), color = Muted, fontSize = 10.sp)
+                            NoteCopyButton(note.hasBody && !opening) { readNote(note.id) { if (it != null) onCopy("便签正文", it.body) } }
                         }
                     }
                 }
@@ -94,25 +148,25 @@ internal fun NotesPage(notes: List<LocalNote>, busy: Boolean, actions: LocalActi
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(title, { if (it.length <= 200) title = it }, Modifier.fillMaxWidth(), label = { Text("标题（最多 200 字）") }, singleLine = true)
             OutlinedTextField(body, { if (it.length <= 100_000) body = it }, Modifier.fillMaxWidth().heightIn(max = 280.dp), label = { Text("正文") }, minLines = 5, maxLines = 10)
-            NoteCopyButton(body, onCopy)
-            if (notes.any { it.id == editingId }) TextButton(onClick = { deleting = notes.find { it.id == editingId } }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, null); Text("删除便签") }
+            NoteCopyButton(body.isNotEmpty()) { onCopy("便签正文", body) }
+            if (existingNote) TextButton(onClick = { deleting = editingId }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, null); Text("删除便签") }
         } },
         confirmButton = { TextButton(onClick = {
             val note = LocalNote(editingId!!, title.trim(), body, pinned)
-            actions.saveNote(note) { editingId = null }
+            actions.saveNote(note, ::closeEditor)
         }, enabled = !busy && (title.isNotBlank() || body.isNotBlank())) { Text("保存") } },
         dismissButton = { TextButton(onClick = { dismiss() }, enabled = !busy) { Text("取消") } })
     if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text("放弃未保存的修改？") },
-        confirmButton = { TextButton(onClick = { discard = false; editingId = null }) { Text("放弃修改") } },
+        confirmButton = { TextButton(onClick = { discard = false; closeEditor() }) { Text("放弃修改") } },
         dismissButton = { TextButton(onClick = { discard = false }) { Text("继续编辑") } })
     if (deleting != null) AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除这条便签？") }, text = { Text("删除后可从此前导出的备份恢复。") },
-        confirmButton = { TextButton(onClick = { deleting?.let { actions.deleteNote(it.id) }; deleting = null; editingId = null }, enabled = !busy) { Text("删除") } },
+        confirmButton = { TextButton(onClick = { deleting?.let(actions.deleteNote); deleting = null; closeEditor() }, enabled = !busy) { Text("删除") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } })
 }
 
 @Composable
-private fun NoteCopyButton(body: String, onCopy: (String, String) -> Unit) {
-    TextButton(onClick = { onCopy("便签正文", body) }, enabled = body.isNotEmpty()) {
+private fun NoteCopyButton(enabled: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled) {
         Icon(Icons.Outlined.ContentCopy, null, Modifier.size(16.dp))
         Spacer(Modifier.width(6.dp))
         Text("复制正文", fontSize = 12.sp)
@@ -120,7 +174,7 @@ private fun NoteCopyButton(body: String, onCopy: (String, String) -> Unit) {
 }
 
 @Composable
-internal fun UtilityPage(id: String, copy: (String, String) -> Unit, back: () -> Unit) {
+internal fun UtilityPage(id: String, copy: (String, String) -> Unit, saveText: (String) -> Unit, back: () -> Unit) {
     var input by remember { mutableStateOf("") }
     var output by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -134,61 +188,90 @@ internal fun UtilityPage(id: String, copy: (String, String) -> Unit, back: () ->
     var millis by remember { mutableStateOf(false) }; var reverse by remember { mutableStateOf(false) }; var utc by remember { mutableStateOf(false) }
     val zone = if (utc) ZoneId.of("UTC") else ZoneId.systemDefault()
     val title = when (id) { "JSON" -> "JSON 工具"; "TEXT" -> "文本处理"; "UNITS" -> "单位换算"; "PASSWORD" -> "密码生成"; else -> "时间戳" }
+    val textStats = remember(id, input) {
+        if (id == "TEXT") "${input.codePointCount(0, input.length)} 个字符 · ${if (input.isEmpty()) 0 else input.lineSequence().count()} 行"
+        else ""
+    }
+    val scope = rememberForegroundScope()
+    var processing by remember { mutableStateOf(false) }
     fun process() {
-        error = null; output = ""
-        runCatching {
-            when (id) {
-                "JSON" -> JsonTools.format(input, mode == "压缩").let { if (mode == "校验") "✓ JSON 语法有效" else it }
-                "TEXT" -> OfflineTools.text(input, mode)
-                "UNITS" -> OfflineTools.convert(input, category, from, to)
-                "PASSWORD" -> OfflineTools.password(length.toIntOrNull() ?: 0, upper, lower, digits, symbols)
-                else -> if (reverse) OfflineTools.dateToTimestamp(input, millis, zone) else OfflineTools.timestampToDate(input, millis, zone)
-            }
-        }.onSuccess { output = it }.onFailure { error = it.message ?: "输入无效" }
+        if (processing) return
+        error = null
+        output = ""
+        val text = input
+        val selectedMode = mode
+        val selectedCategory = category
+        val fromUnit = from
+        val toUnit = to
+        val passwordLength = length.toIntOrNull() ?: 0
+        val (useUpper, useLower, useDigits, useSymbols) = listOf(upper, lower, digits, symbols)
+        val fromDate = reverse
+        val milliseconds = millis
+        processing = true
+        scope.launch {
+            try {
+                output = withContext(Dispatchers.Default) {
+                    when (id) {
+                        "JSON" -> JsonTools.format(text, selectedMode != "格式化", checkCancelled = { ensureActive() })
+                            .let { if (selectedMode == "校验") "✓ JSON 语法有效" else it }
+                        "TEXT" -> OfflineTools.text(text, selectedMode)
+                        "UNITS" -> OfflineTools.convert(text, selectedCategory, fromUnit, toUnit)
+                        "PASSWORD" -> OfflineTools.password(passwordLength, useUpper, useLower, useDigits, useSymbols)
+                        else -> if (fromDate) OfflineTools.dateToTimestamp(text, milliseconds, zone) else OfflineTools.timestampToDate(text, milliseconds, zone)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                error = failure.message ?: "输入无效"
+            } finally { processing = false }
+        }
     }
     Column {
         Header(title, "本机处理 · 输入与结果不会自动保存", back)
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             when (id) {
-                "JSON", "TEXT" -> item { ChoiceRow(if (id == "JSON") listOf("格式化", "压缩", "校验") else listOf("行去重", "移除空行", "行排序", "转大写", "转小写"), mode) { mode = it; output = ""; error = null } }
+                "JSON", "TEXT" -> item { ChoiceRow(if (id == "JSON") listOf("格式化", "压缩", "校验") else listOf("行去重", "移除空行", "行排序", "转大写", "转小写"), mode, enabled = !processing) { mode = it; output = ""; error = null } }
                 "UNITS" -> {
-                    item { ChoiceRow(OfflineTools.units.keys.toList(), category) { category = it; from = OfflineTools.units.getValue(it)[0]; to = OfflineTools.units.getValue(it)[1]; output = "" } }
-                    item { Text("从", color = Ink); ChoiceRow(OfflineTools.units.getValue(category), from) { from = it; output = "" } }
-                    item { Text("转换为", color = Ink); ChoiceRow(OfflineTools.units.getValue(category), to) { to = it; output = "" } }
+                    item { ChoiceRow(OfflineTools.units.keys.toList(), category, enabled = !processing) { category = it; from = OfflineTools.units.getValue(it)[0]; to = OfflineTools.units.getValue(it)[1]; output = "" } }
+                    item { Text("从", color = Ink); ChoiceRow(OfflineTools.units.getValue(category), from, enabled = !processing) { from = it; output = "" } }
+                    item { Text("转换为", color = Ink); ChoiceRow(OfflineTools.units.getValue(category), to, enabled = !processing) { to = it; output = "" } }
                     item { Text("KB / MB / GB 使用 1000 进制；KiB / MiB / GiB 使用 1024 进制。", color = Muted, fontSize = 11.sp) }
                 }
                 "PASSWORD" -> {
-                    item { OutlinedTextField(length, { if (it.length <= 3 && it.all(Char::isDigit)) { length = it; output = "" } }, Modifier.fillMaxWidth(), label = { Text("密码长度（8–128）") }, singleLine = true) }
+                    item { OutlinedTextField(length, { if (it.length <= 3 && it.all(Char::isDigit)) { length = it; output = "" } }, Modifier.fillMaxWidth(), label = { Text("密码长度（8–128）") }, enabled = !processing, singleLine = true) }
                     item { Column {
-                        Toggle("大写字母 A–Z", upper) { upper = it; output = "" }; Toggle("小写字母 a–z", lower) { lower = it; output = "" }
-                        Toggle("数字 0–9", digits) { digits = it; output = "" }; Toggle("符号", symbols) { symbols = it; output = "" }
+                        Toggle("大写字母 A–Z", upper, enabled = !processing) { upper = it; output = "" }; Toggle("小写字母 a–z", lower, enabled = !processing) { lower = it; output = "" }
+                        Toggle("数字 0–9", digits, enabled = !processing) { digits = it; output = "" }; Toggle("符号", symbols, enabled = !processing) { symbols = it; output = "" }
                     } }
                     item { Text("每次使用安全随机源生成，至少包含每一类选中的字符。请保存到你信任的密码管理器。", fontSize = 12.sp, color = Muted) }
                 }
                 "TIME" -> {
-                    item { ChoiceRow(listOf("时间戳 → 日期", "日期 → 时间戳"), if (reverse) "日期 → 时间戳" else "时间戳 → 日期") { reverse = it.startsWith("日期"); input = ""; output = "" } }
-                    item { ChoiceRow(listOf("秒", "毫秒"), if (millis) "毫秒" else "秒") { millis = it == "毫秒"; output = "" } }
-                    item { Toggle("使用 UTC（关闭为设备时区）", utc) { utc = it; output = "" }; Text("当前时区：$zone", color = Muted, fontSize = 12.sp) }
+                    item { ChoiceRow(listOf("时间戳 → 日期", "日期 → 时间戳"), if (reverse) "日期 → 时间戳" else "时间戳 → 日期", enabled = !processing) { reverse = it.startsWith("日期"); input = ""; output = "" } }
+                    item { ChoiceRow(listOf("秒", "毫秒"), if (millis) "毫秒" else "秒", enabled = !processing) { millis = it == "毫秒"; output = "" } }
+                    item { Toggle("使用 UTC（关闭为设备时区）", utc, enabled = !processing) { utc = it; output = "" }; Text("当前时区：$zone", color = Muted, fontSize = 12.sp) }
                     item { TextButton(onClick = {
                         input = if (reverse) DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withZone(zone).format(Instant.now()) else (if (millis) System.currentTimeMillis() else Instant.now().epochSecond).toString()
                         output = ""
-                    }) { Text("填入当前时间") } }
+                    }, enabled = !processing) { Text("填入当前时间") } }
                 }
             }
             if (id != "PASSWORD") item {
-                OutlinedTextField(input, { if (it.length <= 256_000) { input = it; output = ""; error = null } }, Modifier.fillMaxWidth(),
+                OutlinedTextField(input, { if (it.length <= 256_000) { input = it; output = ""; error = null } }, Modifier.fillMaxWidth(), enabled = !processing,
                     minLines = if (id in setOf("JSON", "TEXT")) 5 else 1, maxLines = 10, shape = RoundedCornerShape(14.dp),
                     label = { Text(if (id == "TIME" && reverse) "yyyy-MM-dd HH:mm:ss" else "输入内容") })
-                if (id == "TEXT") Text("${input.codePointCount(0, input.length)} 个字符 · ${if (input.isEmpty()) 0 else input.lines().size} 行", color = Muted, fontSize = 11.sp)
+                if (id == "TEXT") Text(textStats, color = Muted, fontSize = 11.sp)
             }
-            item { PrimaryButton(if (id == "PASSWORD") "生成密码" else "开始处理", ::process) }
+            item { PrimaryButton(if (processing) "处理中…" else if (id == "PASSWORD") "生成密码" else "开始处理", ::process, enabled = !processing) }
             if (error != null) item { Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
             if (output.isNotEmpty()) item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEDF2FF)), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("处理结果", color = Indigo, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        SelectionContainer { Text(output, fontFamily = FontFamily.Monospace, color = Ink, fontSize = 13.sp, modifier = Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) }
-                        TextButton(onClick = { copy(if (id == "PASSWORD") "密码" else "处理结果", output) }) { Text("复制结果") }
+                        val preview = remember(output) { output.take(8192) }
+                        if (output.length > preview.length) Text("仅显示前 ${preview.length} 个字符", color = Muted, fontSize = 11.sp)
+                        SelectionContainer { Text(preview, fontFamily = FontFamily.Monospace, color = Ink, fontSize = 13.sp, modifier = Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) }
+                        TextResultAction(output, { copy(if (id == "PASSWORD") "密码" else "处理结果", output) }, saveText)
                     }
                 }
             }
@@ -198,20 +281,20 @@ internal fun UtilityPage(id: String, copy: (String, String) -> Unit, back: () ->
 }
 
 @Composable
-internal fun ChoiceRow(options: List<String>, selected: String, choose: (String) -> Unit) {
+internal fun ChoiceRow(options: List<String>, selected: String, enabled: Boolean = true, choose: (String) -> Unit) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { value -> FilterChip(selected == value, { choose(value) }, label = { Text(value) }) }
+        options.forEach { value -> FilterChip(selected == value, { choose(value) }, enabled = enabled, label = { Text(value) }) }
     }
 }
 
 @Composable
-internal fun Toggle(label: String, checked: Boolean, change: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked, change); Text(label, fontSize = 13.sp, color = Ink) }
+internal fun Toggle(label: String, checked: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked, change, enabled = enabled); Text(label, fontSize = 13.sp, color = Ink) }
 }
 
 @Composable
 internal fun DataPage(
-    local: LocalSnapshot, accountCount: Int, busy: Boolean, otpError: String?, lastBackup: String?,
+    local: LocalSummary, accountCount: Int, busy: Boolean, otpError: String?, lastBackup: String?,
     actions: LocalActions, back: () -> Unit, onSettings: () -> Unit,
 ) {
     var encrypted by rememberSaveable { mutableStateOf(true) }
@@ -228,7 +311,7 @@ internal fun DataPage(
             item { Card(colors = CardDefaults.cardColors(containerColor = Pale)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("本地数据已就绪", color = Ink, fontWeight = FontWeight.Bold)
-                    Text("${local.notes.size} 条便签 · ${local.favorites.size} 个收藏 · ${local.recent.size} 项最近使用", color = Muted, fontSize = 11.sp)
+                    Text("${local.noteCount} 条便签 · ${local.favorites.size} 个收藏 · ${local.recent.size} 项最近使用", color = Muted, fontSize = 11.sp)
                     Text("最近导出到文件：${lastBackup ?: "尚未导出"}", color = Muted, fontSize = 11.sp)
                 }
             } }

@@ -8,18 +8,25 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.widget.Toast
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.example.androidtoolbox.core.*
 import com.example.androidtoolbox.ui.LocalActions
+import com.example.androidtoolbox.ui.MAX_CLIPBOARD_CHARS
 import com.example.androidtoolbox.ui.ToolboxApp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -29,9 +36,18 @@ import java.time.LocalDate
 
 class MainActivity : ComponentActivity() {
     private var accounts by mutableStateOf<List<OtpAccount>>(emptyList())
-    private var localData by mutableStateOf(LocalSnapshot())
+    private var localData by mutableStateOf(LocalSummary())
+    private var notesVersion by mutableIntStateOf(0)
+    private var otpCount by mutableIntStateOf(0)
+    private var page = "HOME"
+    private var visible = false
+    private var otpRead: Job? = null
+    private val visibleTasks = mutableSetOf<Job>()
+    private var activeTasks = 0
+
+    private enum class Change { NONE, INITIAL, NOTES, FAVORITES, RECENT, BACKUP_DATE, OTP, IMPORT }
     private lateinit var local: LocalStore
-    private lateinit var otpStore: OtpStore
+    private val otpStore by lazy { OtpStore(applicationContext, local) }
     private var otpStoreError by mutableStateOf<String?>(null)
     private var storageError by mutableStateOf<String?>(null)
     private var ready by mutableStateOf(false)
@@ -39,59 +55,84 @@ class MainActivity : ComponentActivity() {
     private var lastBackup by mutableStateOf<String?>(null)
     private var importData by mutableStateOf<BackupData?>(null)
     private var qrScanned by mutableStateOf<CodeResult?>(null)
-    private var pendingQr: Bitmap? = null
     private var otpMigration by mutableStateOf<OtpMigrationBatch?>(null)
     private var otpManualRequested by mutableStateOf(false)
     companion object { private val ioMutex = Mutex() }
 
-    private val createQr = registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
-        val bitmap = pendingQr
-        if (uri != null && bitmap != null) lifecycleScope.launch {
-            runCatching { withContext(Dispatchers.IO) {
-                contentResolver.openOutputStream(uri, "wt")?.use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-                    ?: error("无法打开文件")
-            } }.onSuccess { toast("码图已保存") }.onFailure { toast("保存失败：${it.message}") }
+    private val createQr = createStagedFile("image/png", "pending-code.png", "码图已保存")
+    private val createText = createStagedFile("text/plain", "pending-result.txt", "文本已保存")
+
+    private fun createStagedFile(mime: String, name: String, saved: String) =
+        registerForActivityResult(ActivityResultContracts.CreateDocument(mime)) { uri ->
+            runTask(finishWrite = true, onSuccess = { if (uri != null && visible) toast(saved) }) {
+                val file = File(cacheDir, name)
+                try {
+                    if (uri != null) {
+                        check(file.isFile) { "临时结果已失效，请重新生成" }
+                        contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                            file.inputStream().use { it.copyTo(output) }
+                        } ?: error("无法打开文件")
+                    }
+                } finally { file.delete() }
+            }
         }
-        pendingQr = null
-    }
+
     private val createBackup = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) runTask {
+        runTask(change = if (uri == null) Change.NONE else Change.BACKUP_DATE, finishWrite = true) {
             val staged = File(cacheDir, "pending-backup.json")
-            check(staged.exists()) { "备份已失效，请重新导出" }
-            contentResolver.openOutputStream(uri, "wt")?.use { output -> staged.inputStream().use { it.copyTo(output) } }
-                ?: error("无法写入备份文件")
-            local.setSetting("last_backup", LocalDate.now().toString())
-            staged.delete()
+            try {
+                if (uri != null) {
+                    check(staged.isFile) { "备份已失效，请重新导出" }
+                    contentResolver.openOutputStream(uri, "wt")?.use { output -> staged.inputStream().use { it.copyTo(output) } }
+                        ?: error("无法写入备份文件")
+                    local.setSetting("last_backup", LocalDate.now().toString())
+                }
+            } finally { staged.delete() }
         }
     }
     private val openBackup = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) runTask {
-            val pending = File(cacheDir, "pending-import.json")
-            pending.delete()
-            withContext(Dispatchers.Main) { importData = null }
-            contentResolver.openInputStream(uri)?.use { stream ->
-                pending.writeBytes(stream.readBytesBounded(BackupCodec.MAX_FILE_BYTES))
-            } ?: error("无法读取备份文件")
-            withContext(Dispatchers.Main) { toast("已选择文件，请点击预览并输入口令（如有）") }
+        if (uri != null) {
+            importData = null
+            runTask(onSuccess = { toast("已选择文件，请点击预览并输入口令（如有）") }) {
+                val pending = File(cacheDir, "pending-import.json")
+                pending.delete()
+                var complete = false
+                try {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        pending.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(8192)
+                            var total = 0
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                require(total <= BackupCodec.MAX_FILE_BYTES) { "文件超过 8 MiB" }
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    } ?: error("无法读取备份文件")
+                    complete = true
+                } finally { if (!complete) pending.delete() }
+            }
         }
     }
     private val openQrImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) lifecycleScope.launch {
-            busy = true
-            runCatching { withContext(Dispatchers.IO) { decodeCodeImage(uri) } }
-                .onSuccess { qrScanned = it }.onFailure { toast(it.message ?: "图片解析失败") }
-            busy = false
+        if (uri != null) runTask {
+            val result = decodeCodeImage(uri)
+            withContext(Dispatchers.Main) { if (page == "QR") qrScanned = result }
         }
     }
     private val openOtpImages = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) lifecycleScope.launch {
-            busy = true
-            val result = runCatching { withContext(Dispatchers.IO) {
+        if (uris.isNotEmpty()) {
+            var values = emptyList<String>()
+            runTask(onSuccess = { if (page == "OTP") receiveOtpValues(values) }) {
                 require(uris.size <= 100) { "每次最多选择 100 张图片，可分次继续添加" }
-                uris.map { decodeCodeImage(it, qrOnly = true).text }
-            } }
-            busy = false
-            result.onSuccess(::receiveOtpValues).onFailure { toast(it.message ?: "图片中未找到可识别的二维码") }
+                values = uris.map {
+                    currentCoroutineContext().ensureActive()
+                    decodeCodeImage(it, qrOnly = true).text
+                }
+            }
         }
     }
     private val scanQr = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -121,18 +162,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         local = LocalStore.get(this)
-        otpStore = OtpStore(this, local)
-        runTask(initial = true) { }
         setContent {
             ToolboxApp(
                 accounts = accounts, otpStoreError = otpStoreError, qrScanned = qrScanned,
-                local = localData, busy = busy || !ready, storageError = storageError, lastBackup = lastBackup, importData = importData,
+                local = localData, notesVersion = notesVersion, otpCount = otpCount, onPageChanged = ::showPage,
+                busy = busy || !ready, storageError = storageError, lastBackup = lastBackup, importData = importData,
                 actions = LocalActions(
-                    saveNote = { n, saved -> runTask(onSuccess = saved) { local.saveNote(n) } },
-                    deleteNote = { id -> runTask { local.deleteNote(id) } },
-                    toggleFavorite = { id -> runTask { local.toggleFavorite(id) } },
-                    visit = { id -> runTask { local.visit(id) } },
-                    clearRecent = { runTask { local.clearRecent() } },
+                    saveNote = { n, saved -> runTask(Change.NOTES, finishWrite = true, onSuccess = saved) { local.saveNote(n) } },
+                    deleteNote = { id -> runTask(Change.NOTES, finishWrite = true) { local.deleteNote(id) } },
+                    toggleFavorite = { id -> runTask(Change.FAVORITES, finishWrite = true) { local.toggleFavorite(id) } },
+                    visit = { id -> runTask(Change.RECENT, finishWrite = true, showBusy = false) { local.visit(id) } },
+                    clearRecent = { runTask(Change.RECENT, finishWrite = true) { local.clearRecent() } },
                     export = ::exportBackup,
                     selectImport = { openBackup.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
                     previewImport = ::previewImport,
@@ -146,48 +186,124 @@ class MainActivity : ComponentActivity() {
                 otpManualRequested = otpManualRequested, onOtpManualShown = { otpManualRequested = false },
                 otpMigration = otpMigration, onImportOtpText = { receiveOtpValues(listOf(it)) },
                 onConfirmOtpMigration = ::confirmOtpMigration, onCancelOtpMigration = { otpMigration = null },
-                onSaveQr = { pendingQr = it; createQr.launch("toolbox-code-${System.currentTimeMillis()}.png") },
-                onShareQr = ::shareQr, onCopy = ::copy,
+                onSaveQr = ::saveQr,
+                onShareQr = ::shareQr, onCopy = ::copy, onSaveText = ::saveText,
             )
         }
     }
 
-    private fun runTask(initial: Boolean = false, onSuccess: () -> Unit = {}, action: suspend () -> Unit) {
-        if (!initial && storageError != null) { toast("本地存储尚不可用，请重新打开应用"); return }
-        lifecycleScope.launch {
-            busy = true
-            runCatching {
+    override fun onStart() {
+        visible = true
+        super.onStart()
+        if (!ready) runTask(Change.INITIAL) {
+            pruneTemporaryFiles(cacheDir, "pending-", 4, 24L * 1024 * 1024)
+        }
+        loadOtpForPage()
+    }
+
+    override fun onStop() {
+        visible = false
+        visibleTasks.toList().forEach { it.cancel() }
+        accounts = emptyList()
+        super.onStop()
+    }
+
+    private fun showPage(next: String) {
+        if (next == page) return
+        page = next
+        val secure = WindowManager.LayoutParams.FLAG_SECURE
+        if (next == "OTP" || next == "CRYPTO") window.addFlags(secure) else window.clearFlags(secure)
+        if (next != "OTP") {
+            accounts = emptyList()
+            otpMigration = null
+        }
+        if (next != "QR") qrScanned = null
+        if (next != "PROFILE") importData = null
+        loadOtpForPage()
+    }
+
+    private fun loadOtpForPage() {
+        otpRead?.cancel()
+        if (visible && page in setOf("OTP", "PROFILE")) otpRead = runTask(Change.OTP)
+    }
+
+    private fun runTask(
+        change: Change = Change.NONE,
+        finishWrite: Boolean = false,
+        showBusy: Boolean = true,
+        needsStorage: Boolean = change != Change.NONE,
+        onSuccess: () -> Unit = {},
+        action: suspend () -> Unit = {},
+    ): Job? {
+        if (!visible) return null
+        if (needsStorage && change != Change.INITIAL && storageError != null) {
+            toast("本地存储尚不可用，请重新打开应用")
+            return null
+        }
+        val job = lifecycleScope.launch {
+            if (showBusy) { activeTasks++; busy = true }
+            try {
                 ioMutex.withLock {
-                    withContext(Dispatchers.IO) {
-                        action()
-                        val snapshot = local.snapshot()
-                        Triple(snapshot, runCatching { otpStore.load() }, local.setting("last_backup"))
-                    }.also { (snapshot, loaded, backupDate) ->
-                        localData = snapshot; lastBackup = backupDate
-                        loaded.onSuccess { accounts = it; otpStoreError = null }
-                            .onFailure { otpStoreError = "验证器密钥无法解密，已暂停修改和完整迁移以保护原数据。" }
-                    }
+                    check(!needsStorage || change == Change.INITIAL || storageError == null) { "本地存储尚不可用，请重新打开应用" }
+                    if (!visible && !showBusy) return@withLock
+                    withContext(Dispatchers.IO) { action() }
+                    refresh(change)
                 }
-            }.onSuccess { onSuccess() }.onFailure {
-                if (initial) storageError = "读取本地数据库失败，已暂停修改：${it.message}"
-                toast(it.message ?: "操作失败，原数据已保留")
+                onSuccess()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: OutOfMemoryError) {
+                if (visible) toast("内存不足，请缩小输入或分批处理")
+            } catch (failure: Exception) {
+                if (change == Change.INITIAL) storageError = "读取本地数据库失败，已暂停修改：\${failure.message}"
+                if (visible) toast(failure.message ?: "操作失败，请重试")
+            } finally {
+                if (change == Change.INITIAL && visible) ready = true
+                if (showBusy) { activeTasks--; busy = activeTasks > 0 }
             }
-            ready = true; busy = false
+        }
+        if (!finishWrite) {
+            visibleTasks.add(job)
+            job.invokeOnCompletion { visibleTasks.remove(job) }
+        }
+        return job
+    }
+
+    private suspend fun refresh(change: Change) {
+        if (change == Change.INITIAL || change == Change.IMPORT) {
+            localData = withContext(Dispatchers.IO) { LocalSummary(local.noteCount(), local.favorites(), local.recent()) }
+            lastBackup = withContext(Dispatchers.IO) { local.setting("last_backup") }
+        }
+        if (change == Change.NOTES) localData = localData.copy(noteCount = withContext(Dispatchers.IO) { local.noteCount() })
+        if (change == Change.NOTES || change == Change.IMPORT) notesVersion++
+        if (change == Change.FAVORITES) localData = localData.copy(favorites = withContext(Dispatchers.IO) { local.favorites() })
+        if (change == Change.RECENT) localData = localData.copy(recent = withContext(Dispatchers.IO) { local.recent() })
+        if (change == Change.BACKUP_DATE) lastBackup = withContext(Dispatchers.IO) { local.setting("last_backup") }
+        if ((change == Change.OTP || change == Change.IMPORT) && visible && page in setOf("OTP", "PROFILE")) {
+            val loaded = withContext(Dispatchers.IO) { runCatching { otpStore.load() } }
+            loaded.onSuccess {
+                if (visible && page == "OTP") accounts = it
+                otpCount = it.size
+                otpStoreError = null
+            }.onFailure {
+                accounts = emptyList()
+                otpStoreError = "验证器密钥无法解密，已暂停修改和完整迁移以保护原数据。"
+            }
         }
     }
 
     private fun exportBackup(password: String?, includeOtp: Boolean, share: Boolean) {
-        runTask {
+        runTask(needsStorage = true) {
             require(!includeOtp || otpStoreError == null) { "验证器无法读取，不能导出账号" }
             require(!share || password != null) { "分享迁移文件时请使用口令加密" }
-            val content = BackupCodec.encode(BackupData(local.snapshot(), if (includeOtp) otpStore.load() else emptyList()), password)
+            val content = BackupCodec.encode(BackupData(local.backupSnapshot(), if (includeOtp) otpStore.load() else emptyList()), password)
             if (share) {
-                val file = File(File(cacheDir, "shared").apply { mkdirs() }, "toolbox-backup-${System.currentTimeMillis()}.json")
-                file.writeText(content, Charsets.UTF_8)
-                withContext(Dispatchers.Main) { shareFile(file, "application/json", "分享加密备份") }
+                stageShare(".json", "application/json", "分享加密备份") { it.writeText(content, Charsets.UTF_8) }
             } else {
-                File(cacheDir, "pending-backup.json").writeText(content, Charsets.UTF_8)
-                withContext(Dispatchers.Main) { createBackup.launch("toolbox-backup-${LocalDate.now()}.json") }
+                val file = File(cacheDir, "pending-backup.json")
+                stageForPicker(file, { file.writeText(content, Charsets.UTF_8) }) {
+                    createBackup.launch("toolbox-backup-${LocalDate.now()}.json")
+                }
             }
         }
     }
@@ -204,7 +320,7 @@ class MainActivity : ComponentActivity() {
 
     private fun confirmImport() {
         val incoming = importData ?: return
-        runTask {
+        runTask(Change.IMPORT, finishWrite = true) {
             require(incoming.accounts.isEmpty() || otpStoreError == null) { "验证器暂不可用，无法导入账号" }
             val merged = if (incoming.accounts.isEmpty()) null else otpStore.encode(BackupCodec.mergeAccounts(otpStore.load(), incoming.accounts))
             local.merge(incoming.local, merged)
@@ -221,7 +337,7 @@ class MainActivity : ComponentActivity() {
     private fun addAccount(account: OtpAccount) = addAccounts(listOf(account))
 
     private fun addAccounts(incoming: List<OtpAccount>) {
-        runTask {
+        runTask(Change.OTP, finishWrite = true) {
             check(otpStoreError == null) { otpStoreError.orEmpty() }
             BackupCodec.parseAccounts(BackupCodec.accountsJson(incoming))
             val merged = BackupCodec.mergeAccounts(otpStore.load(), incoming)
@@ -231,25 +347,33 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun receiveOtpValues(values: List<String>) {
-        runCatching {
-            check(otpStoreError == null && storageError == null) { "本地验证器暂不可用" }
-            if (values.isNotEmpty() && values.all { it.trim().startsWith("otpauth://") }) {
-                require(otpMigration == null) { "请先完成或取消当前迁移批次" }
-                addAccounts(values.map(OtpEngine::fromUri))
-            } else {
-                var staged = otpMigration ?: OtpMigrationBatch()
-                values.forEach { staged = staged.add(OtpMigration.decode(it)) }
-                // All selected images must be valid before changing the pending batch.
-                otpMigration = staged
+        if (otpStoreError != null) {
+            toast("本地验证器暂不可用")
+            return
+        }
+        val currentBatch = otpMigration
+        if (values.isNotEmpty() && values.all { it.trim().startsWith("otpauth://") }) {
+            var parsed = emptyList<OtpAccount>()
+            runTask(needsStorage = true, onSuccess = { if (page == "OTP") addAccounts(parsed) }) {
+                require(currentBatch == null) { "请先完成或取消当前迁移批次" }
+                parsed = values.map(OtpEngine::fromUri)
             }
-        }.onFailure { toast(it.message ?: "2FA 二维码无效") }
+        } else {
+            var staged = currentBatch ?: OtpMigrationBatch()
+            runTask(needsStorage = true, onSuccess = { if (page == "OTP") otpMigration = staged }) {
+                for (value in values) {
+                    currentCoroutineContext().ensureActive()
+                    staged = staged.add(OtpMigration.decode(value))
+                }
+            }
+        }
     }
 
     private fun confirmOtpMigration() {
         val batch = otpMigration ?: return
         if (!batch.complete) return
         var added = 0
-        runTask(onSuccess = {
+        runTask(Change.OTP, finishWrite = true, onSuccess = {
             otpMigration = null
             toast("已导入 $added 个账号，跳过 ${batch.accounts.size - added} 个重复账号")
         }) {
@@ -267,29 +391,68 @@ class MainActivity : ComponentActivity() {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法读取图片" }
-        val opts = BitmapFactory.Options().apply { inSampleSize = 1 }
-        while (bounds.outWidth.toLong() / opts.inSampleSize * (bounds.outHeight / opts.inSampleSize) > 4_000_000) opts.inSampleSize *= 2
+        val opts = BitmapFactory.Options().apply {
+            inSampleSize = imageSampleSize(bounds.outWidth, bounds.outHeight, 4096, 4_000_000)
+        }
         val bitmap = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: error("无法读取图片")
         return try { BarcodeCodec.decode(bitmap, qrOnly) } finally { bitmap.recycle() }
     }
     private fun deleteAccount(account: OtpAccount) {
-        runTask {
+        runTask(Change.OTP, finishWrite = true) {
             check(otpStoreError == null) { otpStoreError.orEmpty() }
             otpStore.save(otpStore.load().filterNot { it.id == account.id })
         }
     }
-    private fun shareQr(bitmap: Bitmap) {
-        lifecycleScope.launch {
-            runCatching {
-                val file = withContext(Dispatchers.IO) {
-                    File.createTempFile("toolbox-code-", ".png", File(cacheDir, "shared").apply { mkdirs() }).also { file ->
-                        file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
-                    }
-                }
-                shareFile(file, "image/png", "分享码图")
-            }.onFailure { toast(it.message ?: "分享失败") }
+    private fun saveText(value: String) {
+        if (busy) return
+        runTask {
+            val file = File(cacheDir, "pending-result.txt")
+            stageForPicker(file, { file.writeText(value, Charsets.UTF_8) }) {
+                createText.launch("toolbox-result-${System.currentTimeMillis()}.txt")
+            }
         }
     }
+
+    private fun saveQr(bitmap: Bitmap) {
+        if (busy) return
+        runTask {
+            val file = File(cacheDir, "pending-code.png")
+            stageForPicker(file, { writeQr(bitmap, file) }) {
+                createQr.launch("toolbox-code-${System.currentTimeMillis()}.png")
+            }
+        }
+    }
+
+    private suspend fun stageForPicker(file: File, write: () -> Unit, launchPicker: () -> Unit) {
+        var launched = false
+        try {
+            write()
+            withContext(Dispatchers.Main) {
+                launchPicker()
+                launched = true
+            }
+        } finally { if (!launched) file.delete() }
+    }
+
+    private fun shareQr(bitmap: Bitmap) {
+        if (busy) return
+        runTask { stageShare(".png", "image/png", "分享码图") { writeQr(bitmap, it) } }
+    }
+
+    private fun writeQr(bitmap: Bitmap, file: File) {
+        file.outputStream().buffered().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+    }
+
+    private suspend fun stageShare(extension: String, mime: String, title: String, write: (File) -> Unit) {
+        val directory = File(cacheDir, "shared")
+        check(directory.isDirectory || directory.mkdirs()) { "无法创建临时目录" }
+        val file = File.createTempFile("toolbox-", extension, directory)
+        stageForPicker(file, {
+            write(file)
+            pruneTemporaryFiles(directory, "toolbox-", 12, 64L * 1024 * 1024, setOf(file.name))
+        }) { shareFile(file, mime, title) }
+    }
+
     private fun shareFile(file: File, mime: String, title: String) {
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
@@ -298,21 +461,20 @@ class MainActivity : ComponentActivity() {
         }, title))
     }
     private fun copy(label: String, value: String) {
+        if (value.length > MAX_CLIPBOARD_CHARS) {
+            toast("内容过长，无法复制到系统剪贴板")
+            return
+        }
         val clip = ClipData.newPlainText(label, value)
-        if (label in setOf("验证码", "密码", "处理结果", "图片 Base64", "EXIF")) {
+        if (label in setOf("验证码", "密码", "便签正文", "处理结果", "图片 Base64", "EXIF")) {
             clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         }
-        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
-        toast("已复制")
+        try {
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
+            toast("已复制")
+        } catch (_: RuntimeException) {
+            toast("系统剪贴板无法复制此内容")
+        }
     }
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-    private fun java.io.InputStream.readBytesBounded(max: Int): ByteArray {
-        val output = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val size = read(buffer); if (size < 0) break
-            require(output.size().toLong() + size <= max) { "文件超过 8 MiB" }; output.write(buffer, 0, size)
-        }
-        return output.toByteArray()
-    }
 }

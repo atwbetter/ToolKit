@@ -52,7 +52,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,11 +67,23 @@ import com.example.androidtoolbox.core.CryptoEngine
 import com.example.androidtoolbox.core.LocalNote
 import com.example.androidtoolbox.core.OtpAccount
 import com.example.androidtoolbox.core.OtpEngine
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
+internal const val MAX_CLIPBOARD_CHARS = 256_000
+
+@Composable
+internal fun TextResultAction(text: String, copy: () -> Unit, save: (String) -> Unit) {
+    if (text.length <= MAX_CLIPBOARD_CHARS) TextButton(onClick = copy) { Text("复制结果") }
+    else TextButton(onClick = { save(text) }) { Text("保存完整文本") }
+}
 
 internal val Indigo = Color(0xFF5D62EA)
 internal val Blue = Color(0xFF3374EF)
@@ -117,6 +128,7 @@ internal fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean =
 @Composable
 internal fun CryptoPage(
     onCopy: (String, String) -> Unit,
+    onSaveText: (String) -> Unit,
     onSaveNote: (LocalNote, () -> Unit) -> Unit,
     canSaveNote: Boolean,
     back: () -> Unit,
@@ -124,20 +136,20 @@ internal fun CryptoPage(
     var algorithmName by rememberSaveable { mutableStateOf(Algorithm.AES.name) }
     val algorithm = Algorithm.valueOf(algorithmName)
     var decrypt by rememberSaveable { mutableStateOf(false) }
-    var input by rememberSaveable { mutableStateOf("") }
-    var key by rememberSaveable { mutableStateOf("") }
-    var result by rememberSaveable { mutableStateOf("") }
-    var resultNoteId by rememberSaveable { mutableStateOf(UUID.randomUUID().toString()) }
-    var savedToNote by rememberSaveable { mutableStateOf(false) }
+    var input by remember { mutableStateOf("") }
+    var key by remember { mutableStateOf("") }
+    var result by remember { mutableStateOf("") }
+    var resultNoteId by remember { mutableStateOf(UUID.randomUUID().toString()) }
+    var savedToNote by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var rsaPair by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showKeys by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    val scope = rememberForegroundScope()
     val isHash = algorithm == Algorithm.SHA256 || algorithm == Algorithm.SHA512
     val keySize = algorithm.rawKeyBytes
     val needsKey = algorithm == Algorithm.AES || algorithm == Algorithm.RSA || keySize != null
-    val keyByteCount = key.toByteArray(Charsets.UTF_8).size
+    val keyByteCount = remember(key, keySize) { if (keySize != null) key.toByteArray(Charsets.UTF_8).size else 0 }
     val invalidKeyLength = keySize != null && keyByteCount != keySize
     fun clearResult() { result = ""; savedToNote = false; error = null }
     Column {
@@ -166,7 +178,7 @@ internal fun CryptoPage(
             }
             item {
                 Text(if (decrypt) "密文 / 编码内容" else "原文", color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                OutlinedTextField(input, { input = it; clearResult() }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
+                OutlinedTextField(input, { if (it.length <= 256_000) { input = it; clearResult() } }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
                     minLines = 4, maxLines = 8, shape = RoundedCornerShape(14.dp),
                     placeholder = { Text("输入待处理内容…") })
             }
@@ -176,7 +188,7 @@ internal fun CryptoPage(
                     keySize != null -> "自定义密钥（$keySize 字节）"
                     else -> "口令 / 密钥"
                 }, color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                OutlinedTextField(key, { key = it; clearResult() }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
+                OutlinedTextField(key, { if (it.length <= 16_384) { key = it; clearResult() } }, modifier = Modifier.fillMaxWidth(), enabled = !busy,
                     minLines = if (algorithm == Algorithm.RSA) 3 else 1,
                     maxLines = if (algorithm == Algorithm.RSA) 6 else 2,
                     isError = key.isNotEmpty() && invalidKeyLength,
@@ -189,10 +201,14 @@ internal fun CryptoPage(
                 if (algorithm == Algorithm.RSA) TextButton(onClick = {
                     if (rsaPair != null) showKeys = true else scope.launch {
                         busy = true
-                        runCatching { withContext(Dispatchers.Default) { CryptoEngine.generateRsaPair() } }
-                            .onSuccess { rsaPair = it; key = if (decrypt) it.second else it.first; clearResult(); showKeys = true }
-                            .onFailure { error = it.message }
-                        busy = false
+                        try {
+                            val pair = withContext(Dispatchers.Default) { CryptoEngine.generateRsaPair() }
+                            rsaPair = pair; key = if (decrypt) pair.second else pair.first; clearResult(); showKeys = true
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            error = failure.message
+                        } finally { busy = false }
                     }
                 }, enabled = !busy) { Text(if (rsaPair == null) "生成 2048 位密钥对" else "查看本次生成的密钥对") }
             }
@@ -208,10 +224,17 @@ internal fun CryptoPage(
                     scope.launch {
                         busy = true
                         clearResult()
-                        runCatching { withContext(Dispatchers.Default) { CryptoEngine.process(algorithm, decrypt, input, key) } }
-                            .onSuccess { result = it; resultNoteId = UUID.randomUUID().toString() }
-                            .onFailure { error = it.message ?: "处理失败，请检查输入与密钥" }
-                        busy = false
+                        try {
+                            val text = input
+                            val secret = key
+                            val decoding = decrypt
+                            result = withContext(Dispatchers.Default) { CryptoEngine.process(algorithm, decoding, text, secret) }
+                            resultNoteId = UUID.randomUUID().toString()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            error = failure.message ?: "处理失败，请检查输入与密钥"
+                        } finally { busy = false }
                     }
                 })
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -220,9 +243,11 @@ internal fun CryptoPage(
                 Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFEDF3FF))) {
                     Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("输出结果", color = Color(0xFF5368AC), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        SelectionContainer { Text(result.ifBlank { "处理后的内容将显示在这里" }, color = if (result.isBlank()) Muted else Ink, fontSize = 12.sp) }
+                        val preview = remember(result) { result.take(8192) }
+                        if (result.length > preview.length) Text("仅显示前 ${preview.length} 个字符", color = Muted, fontSize = 11.sp)
+                        SelectionContainer { Text(preview.ifBlank { "处理后的内容将显示在这里" }, color = if (result.isBlank()) Muted else Ink, fontSize = 12.sp) }
                         if (result.isNotBlank()) {
-                            TextButton(onClick = { onCopy("处理结果", result) }) { Text("复制结果") }
+                            TextResultAction(result, { onCopy("处理结果", result) }, onSaveText)
                             if (!decrypt && needsKey) {
                                 OutlinedButton(onClick = {
                                     val encrypted = result
@@ -281,10 +306,13 @@ internal fun OtpPage(
     LaunchedEffect(manualRequested) {
         if (manualRequested) { showAdd = true; onManualShown() }
     }
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = System.currentTimeMillis()
-            delay(1000)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle, filtered.isNotEmpty()) {
+        if (filtered.isNotEmpty()) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1000 - Math.floorMod(now, 1000L))
+            }
         }
     }
     Column {
@@ -317,7 +345,7 @@ internal fun OtpPage(
             }
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(query, { query = it }, Modifier.weight(1f), singleLine = true,
+                    OutlinedTextField(query, { if (it.length <= 320) query = it }, Modifier.weight(1f), singleLine = true,
                         label = { Text("搜索平台名称或账号") },
                         trailingIcon = { if (query.isNotEmpty()) TextButton(onClick = { query = "" }) { Text("清除") } })
                     FilledIconButton(onClick = onScan, enabled = !busy && storeError == null,
@@ -359,7 +387,10 @@ internal fun OtpPage(
                         }
                         Spacer(Modifier.height(12.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            val code = runCatching { OtpEngine.code(account, now) }.getOrDefault("------")
+                            val time = now
+                            val code = remember(account, time / (account.period.coerceAtLeast(1) * 1000L)) {
+                                runCatching { OtpEngine.code(account, time) }.getOrDefault("------")
+                            }
                             val shown = if (code.length == 6) code.chunked(3).joinToString(" ") else code
                             Text(shown, color = Ink, fontSize = 26.sp, fontWeight = FontWeight.Bold,
                                 letterSpacing = 2.sp, modifier = Modifier.weight(1f).clickable { onCopy("验证码", code) })

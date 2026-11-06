@@ -23,13 +23,13 @@ object BackupCodec {
             put("favorites", JSONArray(data.local.favorites.sorted()))
             put("recent", JSONArray().apply { data.local.recent.forEach { r -> put(JSONObject().apply { put("tool", r.tool); put("visitedAt", r.visitedAt) }) } })
             put("accounts", accountArray)
-        }.toString()
+        }
         val output = JSONObject().apply {
             put("format", FORMAT); put("schemaVersion", 1); put("appVersion", "0.2.0")
             put("exportedAt", System.currentTimeMillis()); put("encrypted", password != null)
-            if (password == null) put("data", JSONObject(payload)) else {
+            if (password == null) put("data", payload) else {
                 put("cipher", "AES-256-GCM/PBKDF2-SHA256-150000-v1")
-                put("payload", CryptoEngine.process(Algorithm.AES, false, payload, password))
+                put("payload", CryptoEngine.process(Algorithm.AES, false, payload.toString(), password))
             }
         }.toString(2)
         require(output.toByteArray(Charsets.UTF_8).size <= MAX_FILE_BYTES) { "备份超过 8 MiB，请减少便签内容后重试" }

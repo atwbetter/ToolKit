@@ -149,13 +149,16 @@ object BarcodeCodec {
 
     fun decode(bitmap: Bitmap, qrOnly: Boolean = false): CodeResult {
         require(bitmap.width.toLong() * bitmap.height <= 8_000_000) { "图片过大" }
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        val bytes = ByteArray(pixels.size) { i ->
-            val pixel = pixels[i]
-            val alpha = pixel ushr 24
-            val gray = (((pixel shr 16 and 255) + (pixel shr 8 and 255) * 2 + (pixel and 255)) / 4)
-            ((gray * alpha + 255 * (255 - alpha)) / 255).toByte()
+        val pixels = IntArray(bitmap.width)
+        val bytes = ByteArray(bitmap.width * bitmap.height)
+        var offset = 0
+        for (y in 0 until bitmap.height) {
+            bitmap.getPixels(pixels, 0, bitmap.width, 0, y, bitmap.width, 1)
+            for (pixel in pixels) {
+                val alpha = pixel ushr 24
+                val gray = ((pixel shr 16 and 255) + (pixel shr 8 and 255) * 2 + (pixel and 255)) / 4
+                bytes[offset++] = ((gray * alpha + 255 * (255 - alpha)) / 255).toByte()
+            }
         }
         return CodeDecoder.decode(CodeLuminanceSource(bitmap.width, bitmap.height, bytes), qrOnly)
             ?: error(if (qrOnly) "图片中未找到可识别的二维码" else "图片中未找到支持的二维码或条形码，请选择清晰、完整的图片")
@@ -164,10 +167,12 @@ object BarcodeCodec {
 
 internal fun renderMatrix(matrix: BitMatrix, foreground: Int, footer: Int = 0): Bitmap {
     val width = matrix.width; val height = matrix.height + footer
-    val pixels = IntArray(width * height) { Color.WHITE }
-    for (y in 0 until matrix.height) for (x in 0 until width) if (matrix[x, y]) pixels[y * width + x] = foreground
-    // The barcode caption is drawn onto this bitmap with Canvas.
+    val row = IntArray(width)
     return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
-        setPixels(pixels, 0, width, 0, 0, width, height)
+        eraseColor(Color.WHITE)
+        for (y in 0 until matrix.height) {
+            for (x in row.indices) row[x] = if (matrix[x, y]) foreground else Color.WHITE
+            setPixels(row, 0, width, 0, y, width, 1)
+        }
     }
 }

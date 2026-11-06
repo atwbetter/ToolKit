@@ -50,11 +50,14 @@ import androidx.core.graphics.get
 import androidx.core.graphics.withSave
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import com.example.androidtoolbox.core.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -99,7 +102,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val resolver = context.contentResolver
     val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     val cache = remember(context) { File(context.cacheDir, "image-tools") }
-    val scope = rememberCoroutineScope()
+    val scope = rememberForegroundScope()
     val listState = rememberLazyListState()
     var operation by rememberSaveable { mutableStateOf(ImageOperation.BORDER) }
     var single by rememberSaveable { mutableStateOf<String?>(null) }
@@ -121,6 +124,7 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
     val stitch = operation == ImageOperation.STITCH
     val watermarkPreview = watermark.takeIf { operation == ImageOperation.WATERMARK && it.text.isNotBlank() }
     val selected = if (stitch) multiple else listOfNotNull(single)
+    val started = lifecycleState.isAtLeast(Lifecycle.State.STARTED)
 
     fun clearResult() {
         resultName = null
@@ -248,25 +252,27 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         }
     }
 
-    LaunchedEffect(cache) {
+    val protectedFiles = setOfNotNull(resultName, pendingSave, single?.toUri()?.takeIf { it.scheme == "file" }?.lastPathSegment)
+    LaunchedEffect(cache, started) {
+        if (!started) return@LaunchedEffect
         withContext(Dispatchers.IO) {
-            val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000
-            cache.listFiles()?.filter { it.name.startsWith("toolbox-image-") && it.lastModified() < cutoff }?.forEach(File::delete)
+            pruneTemporaryFiles(cache, "toolbox-image-", 12, 256L * 1024 * 1024, protectedFiles)
         }
     }
     // Key the load so the previous selection is never actionable while a new one is loading.
-    val load = key(selected) {
-        produceState<Result<LoadedImages>?>(null) {
-            if (selected.isEmpty()) return@produceState
-            value = imageLoad {
-                val sources = selected.map { resolver.readImageSource(it.toUri()) }
-                val source = sources.first()
-                val bitmap = ImageTools.preview(resolver, source)
-                LoadedImages(sources, ImagePreview(source, bitmap), ImageTools.palette(bitmap))
-            }
-        }.value
+    val load = if (selected.isEmpty()) null else rememberImageLoad(selected) {
+        val sources = selected.map { resolver.readImageSource(it.toUri()) }
+        val source = sources.first()
+        val bitmap = ImageTools.preview(resolver, source)
+        LoadedImages(sources, ImagePreview(source, bitmap), emptyList())
     }
-    val images = load?.getOrNull()
+    val loadedImages = load?.getOrNull()
+    val palette by produceState<List<Int>>(emptyList(), loadedImages, operation) {
+        value = if (operation == ImageOperation.COLOR && loadedImages != null) {
+            imageLoad { ImageTools.palette(loadedImages.preview.bitmap) }.getOrDefault(emptyList())
+        } else emptyList()
+    }
+    val images = loadedImages?.copy(palette = palette)
     val source = images?.preview?.source
     val scopeMode = cropMode.resolveScope(customCrop != null)
     val currentCropMode = cropMode.copy(scope = scopeMode)
@@ -290,6 +296,8 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
             var complete = false
             try {
                 encode(file)
+                ensureActive()
+                pruneTemporaryFiles(cache, "toolbox-image-", 12, 256L * 1024 * 1024, protectedFiles + file.name)
                 complete = true
                 file.name
             } finally {
@@ -451,14 +459,14 @@ internal fun ImageToolsPage(copy: (String, String) -> Unit, back: () -> Unit) {
         notice?.let { message -> item { Text(message, color = Indigo, modifier = Modifier.padding(horizontal = 22.dp)) } }
         item { Spacer(Modifier.height(12.dp)) }
     }
-    resultName?.takeIf { operation == ImageOperation.BORDER && showingBorderPreview }?.let { name ->
+    resultName?.takeIf { started && operation == ImageOperation.BORDER && showingBorderPreview }?.let { name ->
         BorderResultDialog(
             File(cache, name), working || pendingSave != null, notice, error,
             save = { saveResult(name, ImageFormat.PNG.mime) },
             close = { showingBorderPreview = false },
         )
     }
-    if (showingWatermarkPreview && watermarkPreview != null && images != null) {
+    if (started && showingWatermarkPreview && watermarkPreview != null && images != null) {
         val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
         val height = minOf(420.dp, windowHeight * .6f)
         AlertDialog(
@@ -497,9 +505,7 @@ private fun ContentResolver.readPreview(file: File): ImagePreview {
 @Composable
 private fun BorderResultDialog(file: File, busy: Boolean, notice: String?, error: String?, save: () -> Unit, close: () -> Unit) {
     val resolver = LocalContext.current.contentResolver
-    val result by produceState<Result<ImagePreview>?>(null, file) {
-        value = imageLoad { resolver.readPreview(file) }
-    }
+    val result = rememberImageLoad(file) { resolver.readPreview(file) }
     val preview = result?.getOrNull()
     val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
     AlertDialog(
@@ -513,7 +519,7 @@ private fun BorderResultDialog(file: File, busy: Boolean, notice: String?, error
                         ImageDetail("${preview.source.width} × ${preview.source.height} px · PNG")
                     }
                     result == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
-                    else -> Text(result?.exceptionOrNull()?.message ?: "无法读取预览", color = MaterialTheme.colorScheme.error)
+                    else -> Text(result.exceptionOrNull()?.message ?: "无法读取预览", color = MaterialTheme.colorScheme.error)
                 }
                 notice?.let { Text(it, color = Indigo) }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -522,6 +528,21 @@ private fun BorderResultDialog(file: File, busy: Boolean, notice: String?, error
         confirmButton = { Button(save, enabled = !busy && preview != null) { Text("保存") } },
         dismissButton = { TextButton(close, enabled = !busy) { Text("返回继续编辑") } },
     )
+}
+
+@Composable
+private fun <T> rememberImageLoad(request: Any, load: () -> T): Result<T>? {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    return key(request) {
+        produceState<Result<T>?>(null, lifecycle) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                try {
+                    value = imageLoad(load)
+                    awaitCancellation()
+                } finally { value = null }
+            }
+        }.value
+    }
 }
 
 private suspend fun <T> imageLoad(block: () -> T): Result<T> {
@@ -545,18 +566,16 @@ private fun ImageResultPanel(
     copyText: (File) -> Unit,
 ) {
     val context = LocalContext.current
-    val result by produceState<Result<Any>?>(null, file) {
-        value = imageLoad {
-            check(file.isFile) { "临时结果已失效，请重新生成" }
-            when (file.extension) {
-                "txt" -> {
-                    val prefix = ByteArray(minOf(144L, file.length()).toInt())
-                    DataInputStream(file.inputStream()).use { it.readFully(prefix) }
-                    String(prefix, Charsets.US_ASCII)
-                }
-                "zip" -> ZipFile(file).use { it.size() }
-                else -> context.contentResolver.readPreview(file)
+    val result = rememberImageLoad<Any>(file) {
+        check(file.isFile) { "临时结果已失效，请重新生成" }
+        when (file.extension) {
+            "txt" -> {
+                val prefix = ByteArray(minOf(144L, file.length()).toInt())
+                DataInputStream(file.inputStream()).use { it.readFully(prefix) }
+                String(prefix, Charsets.US_ASCII)
             }
+            "zip" -> ZipFile(file).use { it.size() }
+            else -> context.contentResolver.readPreview(file)
         }
     }
     ImagePanel {

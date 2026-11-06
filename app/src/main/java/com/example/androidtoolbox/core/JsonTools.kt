@@ -2,18 +2,24 @@ package com.example.androidtoolbox.core
 
 /** Strict JSON parser/formatter: preserves number spelling, checks escapes, bounds nesting and input. */
 object JsonTools {
-    fun format(input: String, compact: Boolean = false, maxChars: Int = 256_000): String {
+    fun format(input: String, compact: Boolean = false, maxChars: Int = 256_000, checkCancelled: () -> Unit = {}): String {
         require(input.length <= maxChars) { "JSON 输入过长" }
-        return Parser(input, compact).parse()
+        return Parser(input, compact, checkCancelled).parse()
     }
-    private class Parser(val source: String, val compact: Boolean) {
+    private class Parser(val source: String, val compact: Boolean, val checkCancelled: () -> Unit) {
         var pos = 0
         val out = StringBuilder()
         fun fail(): Nothing = error("JSON 语法错误，位置 ${pos + 1}")
         fun ws() { while (pos < source.length && source[pos] in " \n\r\t") pos++ }
-        fun indent(depth: Int) { if (!compact) { out.append('\n'); repeat(depth) { out.append("  ") } } }
+        fun indent(depth: Int) {
+            if (compact) return
+            require(out.length < 2_000_000) { "格式化结果过长，请使用压缩模式或分段处理" }
+            out.append('\n')
+            repeat(depth) { out.append("  ") }
+        }
         fun parse(): String { ws(); value(0); ws(); if (pos != source.length) fail(); return out.toString() }
         fun value(depth: Int) {
+            checkCancelled()
             require(depth <= 64) { "JSON 嵌套不能超过 64 层" }
             ws()
             when (source.getOrNull(pos)) {

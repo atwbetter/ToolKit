@@ -22,9 +22,18 @@ import java.net.URI
 import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
-import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+
+internal fun imageSampleSize(width: Int, height: Int, edgeLimit: Int, pixelLimit: Int): Int {
+    var sample = 1
+    while (true) {
+        val sampledWidth = (width.toLong() + sample - 1) / sample
+        val sampledHeight = (height.toLong() + sample - 1) / sample
+        if (maxOf(sampledWidth, sampledHeight) <= edgeLimit && sampledWidth * sampledHeight <= pixelLimit) return sample
+        sample *= 2
+    }
+}
 
 internal enum class ImageFormat(val label: String, val extension: String, val mime: String) {
     PNG("PNG", "png", "image/png"),
@@ -53,7 +62,7 @@ internal object ImageTools {
     }
 
     fun preview(resolver: ContentResolver, source: ImageSource): Bitmap =
-        decode(resolver, source, sampleFor(source, 1280, 1_200_000))
+        decode(resolver, source, imageSampleSize(source.width, source.height, 1280, 1_200_000))
 
     fun edit(resolver: ContentResolver, source: ImageSource, operation: (Bitmap) -> Bitmap): Bitmap {
         return transform(decodeForEdit(resolver, source), operation)
@@ -139,7 +148,7 @@ internal object ImageTools {
                 offset += length
             }
             return result
-        } catch (failure: Exception) {
+        } catch (failure: Throwable) {
             result.recycle()
             throw failure
         }
@@ -233,20 +242,10 @@ internal object ImageTools {
 
     private fun dataPrefix(source: ImageSource) = "data:${source.mime};base64,"
 
-    private fun sampleFor(source: ImageSource, edgeLimit: Int, pixelLimit: Int): Int {
-        var sample = 1
-        while (true) {
-            val width = ceil(source.width.toDouble() / sample).toInt()
-            val height = ceil(source.height.toDouble() / sample).toInt()
-            if (maxOf(width, height) <= edgeLimit && width.toLong() * height <= pixelLimit) return sample
-            sample *= 2
-        }
-    }
-
     private fun sampleForTarget(source: ImageSource, width: Int, height: Int, pixelLimit: Int = MAX_PIXELS): Int {
         var sample = 1
         while (source.width / (2 * sample) >= width && source.height / (2 * sample) >= height) sample *= 2
-        return maxOf(sample, sampleFor(source, MAX_EDGE, pixelLimit))
+        return maxOf(sample, imageSampleSize(source.width, source.height, MAX_EDGE, pixelLimit))
     }
 
     private fun decodeForEdit(resolver: ContentResolver, source: ImageSource): Bitmap {

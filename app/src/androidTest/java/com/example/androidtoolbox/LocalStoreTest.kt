@@ -10,6 +10,23 @@ import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class LocalStoreTest {
+    @Test fun notePreviewsSearchFullBodyWithoutRetainingIt() {
+        val base = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "test-${UUID.randomUUID()}.db"
+        val store = LocalStore(base, name)
+        try {
+            val body = "  ${"x".repeat(500)}\nÜber\n "
+            val note = LocalNote(UUID.randomUUID().toString(), "Pinned", body, pinned = true)
+            store.saveNote(note)
+            store.saveNote(LocalNote(UUID.randomUUID().toString(), "Unpinned", "Über"))
+            assertEquals(2, store.noteCount())
+            val preview = store.notePreviews("ÜBER", pinnedOnly = true) {}.single()
+            assertEquals(note.id, preview.id)
+            assertEquals(body.take(240), preview.excerpt)
+            assertEquals(body, store.note(preview.id)?.body)
+        } finally { store.close(); base.deleteDatabase(name) }
+    }
+
     @Test fun encryptedNotesRemainDecryptableAfterReopen() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
         val name = "test-${UUID.randomUUID()}.db"

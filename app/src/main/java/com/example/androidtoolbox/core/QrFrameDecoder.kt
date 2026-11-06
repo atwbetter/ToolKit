@@ -21,6 +21,14 @@ object QrFrameDecoder {
         val outputWidth = if (turned) height else width
         val outputHeight = if (turned) width else height
         val luminance = ByteArray(width * height)
+        if (rotation == 0 && pixelStride == 1) {
+            if (rowStride == width) bytes.get(luminance)
+            else for (y in 0 until height) {
+                bytes.position(base + y * rowStride)
+                bytes.get(luminance, y * width, width)
+            }
+            return CodeDecoder.decode(CodeLuminanceSource(width, height, luminance), qrOnly)
+        }
         for (y in 0 until height) for (x in 0 until width) {
             val index = when (rotation) {
                 90 -> x * height + (height - 1 - y)

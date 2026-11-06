@@ -5,7 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-/** All callers use the serialized IO queue in MainActivity. No destructive upgrade fallback. */
+/** Access from IO. Writes and backups are serialized by MainActivity. */
 class LocalStore(context: Context, databaseName: String = "toolbox.db") : SQLiteOpenHelper(context.applicationContext, databaseName, null, 1) {
     companion object {
         @Volatile private var instance: LocalStore? = null
@@ -29,17 +29,57 @@ class LocalStore(context: Context, databaseName: String = "toolbox.db") : SQLite
     }
 
     fun snapshot(): LocalSnapshot {
-        val db = readableDatabase
-        val notes = db.rawQuery("SELECT id,title,body,pinned,updated_at FROM notes ORDER BY pinned DESC,updated_at DESC,id", null).use { cur ->
-            buildList { while (cur.moveToNext()) add(LocalNote(cur.getString(0), cur.getString(1), cur.getString(2), cur.getInt(3) == 1, cur.getLong(4))) }
+        val notes = readableDatabase.rawQuery("SELECT id,title,body,pinned,updated_at FROM notes ORDER BY pinned DESC,updated_at DESC,id", null).use { cur ->
+            buildList { while (cur.moveToNext()) add(cur.note()) }
         }
-        val favorites = db.rawQuery("SELECT tool_id FROM favorites", null).use { cur ->
-            buildSet { while (cur.moveToNext()) if (cur.getString(0) in TOOL_IDS) add(cur.getString(0)) }
-        }
-        val recent = db.rawQuery("SELECT tool_id,visited_at FROM recent_tools ORDER BY visited_at DESC LIMIT 30", null).use { cur ->
+        return LocalSnapshot(notes, favorites(), recent())
+    }
+
+    internal fun noteCount(): Int = android.database.DatabaseUtils.queryNumEntries(readableDatabase, "notes").toInt()
+
+    internal fun favorites(): Set<String> = readableDatabase.rawQuery("SELECT tool_id FROM favorites", null).use { cur ->
+        buildSet { while (cur.moveToNext()) if (cur.getString(0) in TOOL_IDS) add(cur.getString(0)) }
+    }
+
+    internal fun recent(): List<RecentTool> =
+        readableDatabase.rawQuery("SELECT tool_id,visited_at FROM recent_tools ORDER BY visited_at DESC LIMIT 30", null).use { cur ->
             buildList { while (cur.moveToNext()) if (cur.getString(0) in TOOL_IDS) add(RecentTool(cur.getString(0), cur.getLong(1))) }
         }
-        return LocalSnapshot(notes, favorites, recent)
+
+    internal fun notePreviews(query: String, pinnedOnly: Boolean, checkCancelled: () -> Unit): List<NotePreview> {
+        // SQLite NOCASE is ASCII-only. Read full text one row at a time for the existing Unicode search.
+        val body = if (query.isEmpty()) "substr(body,1,240)" else "body"
+        val where = if (pinnedOnly) " WHERE pinned=1" else ""
+        return readableDatabase.rawQuery("SELECT id,title,$body,pinned,updated_at, length(CAST(body AS BLOB)) > 0 FROM notes$where ORDER BY pinned DESC,updated_at DESC,id", null).use { cur ->
+            buildList {
+                while (cur.moveToNext()) {
+                    checkCancelled()
+                    val title = cur.getString(1)
+                    val text = cur.getString(2)
+                    if (title.contains(query, true) || text.contains(query, true)) {
+                        add(NotePreview(cur.getString(0), title, text.take(240), cur.getInt(5) == 1, cur.getInt(3) == 1, cur.getLong(4)))
+                    }
+                }
+            }
+        }
+    }
+
+    internal fun note(id: String): LocalNote? =
+        readableDatabase.rawQuery("SELECT id,title,body,pinned,updated_at FROM notes WHERE id=?", arrayOf(id)).use {
+            if (it.moveToFirst()) it.note() else null
+        }
+
+    private fun android.database.Cursor.note() =
+        LocalNote(getString(0), getString(1), getString(2), getInt(3) == 1, getLong(4))
+
+    internal fun backupSnapshot(): LocalSnapshot {
+        readableDatabase.rawQuery("SELECT COUNT(*), SUM(length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))) FROM notes", null).use {
+            check(it.moveToFirst())
+            require(it.getLong(0) <= 5000 && it.getLong(1) <= BackupCodec.MAX_FILE_BYTES) {
+                "备份最多包含 5000 条便签且不得超过 8 MiB，请减少便签内容后重试"
+            }
+        }
+        return snapshot()
     }
 
     fun saveNote(note: LocalNote) {
@@ -91,14 +131,16 @@ class LocalStore(context: Context, databaseName: String = "toolbox.db") : SQLite
     /** Entire merge, including freshly re-encrypted OTP data, commits or rolls back together. */
     fun merge(incoming: LocalSnapshot, otpCiphertext: String?) {
         transaction { db ->
-            val existing = snapshot()
-            val byId = existing.notes.associateBy { it.id }
+            val byId = db.rawQuery("SELECT id,updated_at FROM notes", null).use { cursor ->
+                buildMap { while (cursor.moveToNext()) put(cursor.getString(0), cursor.getLong(1)) }
+            }
             incoming.notes.forEach { note ->
-                if ((byId[note.id]?.updatedAt ?: -1) < note.updatedAt) upsertNote(db, note)
+                if ((byId[note.id] ?: -1) < note.updatedAt) upsertNote(db, note)
             }
             incoming.favorites.forEach { db.execSQL("INSERT OR IGNORE INTO favorites(tool_id) VALUES(?)", arrayOf(it)) }
+            val recentByTool = recent().associateBy { it.tool }
             incoming.recent.forEach { item ->
-                val prior = existing.recent.find { it.tool == item.tool }?.visitedAt ?: -1
+                val prior = recentByTool[item.tool]?.visitedAt ?: -1
                 if (item.visitedAt > prior) db.execSQL("INSERT OR REPLACE INTO recent_tools(tool_id,visited_at) VALUES(?,?)", arrayOf<Any>(item.tool, item.visitedAt))
             }
             if (otpCiphertext != null) saveVault(otpCiphertext)
